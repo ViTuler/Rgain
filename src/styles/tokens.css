@@ -1,0 +1,150 @@
+/* Aligned with Rain blog (h:/RainV/Rain/app/assets/styles/tokens.css):
+   warm black / warm white skeleton, brand red + accent cyan. */
+
+:root {
+  color-scheme: dark;
+
+  /* Accents — same as Rain */
+  --color_brand: #ff1b1b;
+  --color_accent: #75eec5;
+  --color_accent_deep: #8ed9bc;
+  --color_accent_ink: #17614a;
+  --color_accent_soft: #17332e;
+  --color_on_accent: #17614a;
+
+  /* Warm black / grey skeleton */
+  --color_ink: #f3ecec;
+  --color_body: #d0c4c2;
+  --color_muted: #aea19f;
+  --color_faint: #8a7d7b;
+  --color_night: #100e0e;
+
+  /* Dark surfaces (default app chrome + 3D stage) */
+  --color_bright: #322a29;
+  --color_surface: #1c1716;
+  --color_surface_2: #141110;
+  --color_surface_3: #282120;
+  --color_line: #3c3331;
+  --color_line_strong: #524744;
+
+  /* On-dark helpers */
+  --color_on_dark: #f5efef;
+  --ink_rgb: 23 20 20;
+  --bright_rgb: 245 239 239;
+  --accent_rgb: 117 238 197;
+
+  /* Compat aliases used by existing panels */
+  --color_accent_mint: var(--color_accent);
+  --color_accent_crimson: var(--color_brand);
+  --color_bg_deep: var(--color_surface_2);
+  --color_bg_panel: var(--color_surface);
+  --color_bg_light: #f5efef;
+  --color_text_on_deep: var(--color_ink);
+  --color_text_muted: var(--color_muted);
+  --color_text_on_mint: var(--color_on_accent);
+  --color_text_on_crimson: #f5efef;
+  --color_edge_mint_weak: rgb(var(--accent_rgb) / 0.35);
+  --color_edge_crimson_weak: color-mix(in srgb, #ff1b1b 40%, transparent);
+  --color_border: var(--color_line);
+  --color_danger_soft: color-mix(in srgb, #ff1b1b 16%, transparent);
+
+  --font_sans: "Calibri", "Segoe UI", -apple-system, BlinkMacSystemFont, "PingFang SC",
+    "Microsoft YaHei", sans-serif;
+  --radius_xs: 4px;
+  --radius_sm: 6px;
+  --radius_md: 8px;
+  --radius_lg: 12px;
+  --space_xs: 0.35rem;
+  --space_sm: 0.6rem;
+  --space_md: 1rem;
+  --space_lg: 1.5rem;
+  --panel_left_width: 240px;
+  --panel_right_width: 320px;
+  --header_height: 48px;
+  --ease_soft: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --shadow_panel: 0 2px 18px -8px rgb(0 0 0 / 0.55);
+}
+
+/* Optional light chrome (settings / future toggle) */
+html[data_theme="light"] {
+  color-scheme: light;
+
+  --color_accent_deep: #1f7d5b;
+  --color_accent_soft: #e9fbf5;
+  --color_on_accent: #f5efef;
+
+  --color_ink: #171414;
+  --color_body: #3f3a3a;
+  --color_muted: #656565;
+  --color_faint: #8b8484;
+  --color_night: #171414;
+
+  --color_bright: #f5efef;
+  --color_surface: #f7f3f3;
+  --color_surface_2: #efe8e8;
+  --color_surface_3: #fdfbfb;
+  --color_line: #e7dfdf;
+  --color_line_strong: #d6cccc;
+
+  --color_bg_deep: var(--color_bright);
+  --color_bg_panel: var(--color_surface);
+  --color_text_on_deep: var(--color_ink);
+  --color_text_muted: var(--color_muted);
+  --color_text_on_mint: var(--color_accent_ink);
+  --color_border: var(--color_line);
+  --shadow_panel: 0 2px 16px -8px rgb(58 32 32 / 0.22);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font_sans);
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--color_body);
+  background: var(--color_surface_2);
+  background-image: radial-gradient(
+    48rem 28rem at 12% -10%,
+    rgb(var(--accent_rgb) / 0.1),
+    transparent 62%
+  );
+  background-repeat: no-repeat;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color_accent_deep);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgb(var(--accent_rgb) / 0.28);
+}
+
+::selection {
+  background: var(--color_accent);
+  color: var(--color_accent_ink);
+}

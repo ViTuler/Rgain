@@ -1,0 +1,12 @@
+# Phase A (health / echo): stdlib only — no pip packages required.
+# Phase B+:
+#   pymupdf
+#   ebooklib
+#   beautifulsoup4
+#   lxml
+#   httpx
+#   pydantic
+#
+# Install into conda env `vi` (never base), e.g.:
+#   conda activate vi
+#   pip install pymupdf ebooklib beautifulsoup4 lxml
