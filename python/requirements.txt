@@ -1,9 +1,9 @@
-# Install into conda env `vi` only (never base):
-#   conda activate vi
+# Install into a dedicated env (never conda base), e.g.:
+#   conda activate <your-env>
 #   pip install -r python/requirements.txt
 #
-# Phase A health/echo works with stdlib alone.
-# Phase B PDF/EPUB/MOBI extract:
+# health/echo works with stdlib alone.
+# PDF/EPUB/MOBI extract:
 pymupdf>=1.24.0
 ebooklib>=0.18
 mobi>=0.4.0

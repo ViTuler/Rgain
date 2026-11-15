@@ -3,6 +3,7 @@
     "private": true,
     "version": "0.1.0",
     "description": "Rgain — local 3D logic map over books and code",
+    "license": "Apache-2.0",
     "type": "module",
     "scripts": {
         "dev": "vite",

@@ -1,56 +1,105 @@
 # Rgain
 
-本地 Brainstorm 桌面应用：选定书籍/代码目录 → 多模型归纳 → **3D 空间逻辑图**讲解。
+本地桌面 Brainstorm：选定书籍或代码目录 → 调用大模型归纳 → 在 **2D 逻辑图**上浏览结构与节点讲解。
+
+当前版本以 2D Flow 为主舞台；3D Trunk 仍在实验中，界面入口暂未开放。
+
+## 功能概览
+
+- **导入解析**：选择代码/书籍目录，或单本图书（PDF / EPUB / MOBI）
+- **逻辑图**：Cytoscape + ELK 布局（Flow / Tree / Radial / Force）；点击节点查看讲解与源文件引用
+- **解析历史**：结果写入本机 SQLite，可回放、重命名、删除
+- **划词释义**：默认快捷键 `Ctrl+Shift+E`（可在设置中修改），释义写入本地历史
+- **设置**：界面语言（zh / en / ja / ko）、LLM Base / Key / Model、Agent Prompt、「测试连接」、开发端口、Sidecar 自检  
+  API Key 仅保存在 Rust 后端，前端只显示脱敏串
 
 ## 技术栈
 
 | 层 | 选型 |
 |----|------|
-| 壳 / UI | Tauri 2 + Vue3 + TypeScript |
-| 3D | TresJS / Three.js（Trunk Timeline + DAG） |
-| 解析 | 纯文本 → Rust；PDF/EPUB → Python sidecar |
-| 缓存 | SQLite（Rust 单一写者） |
-| 色板 | 暖黑/暖白骨架 + 青 `#75eec5` / 红 `#ff1b1b`（对齐 Rain blog） |
+| 桌面壳 / UI | Tauri 2 + Vue 3 + TypeScript + Vite |
+| 2D 图 | Cytoscape、ELK |
+| 3D（实验） | TresJS / Three.js |
+| 文本与代码 | Rust 直读 |
+| PDF / EPUB / MOBI | Python sidecar（`python/rgain_parser`） |
+| 本地缓存 | SQLite（Rust 单一写者） |
 
-文档见 [`docs/`](./docs/)。
+## 环境要求
 
-## 开发
+1. **Node.js + npm**（本仓库只用 npm）
+2. **Rust toolchain**（[rustup](https://rustup.rs/)，需 `cargo` 在 PATH）
+3. **Python 3**（开发态解析图书时需要；建议独立虚拟环境 / conda env，勿装到 `base`）
+4. **Windows WebView2**（Tauri 桌面运行时）
 
-前置：
-
-1. **Node + npm**（本仓库只用 npm，不用 pnpm/yarn）
-2. **Rust toolchain**（[rustup](https://rustup.rs/) 默认安装即可；需 `cargo` 在 PATH）
-3. **conda env `vi`**（仅开发态 sidecar；PDF/EPUB：`pip install -r python/requirements.txt`，勿装到 base）
-4. Windows WebView2
+## 快速开始
 
 ```bash
 npm install
 npm run tauri dev
 ```
 
-开发默认端口 **20015**（可在设置中修改，≥20000；保存后重启 `tauri dev`）。端口同步文件：`rgain.dev.json`。
-
-**Sidecar 解析器**
-
-| 模式 | 启动方式 |
-|------|----------|
-| 开发（debug） | 自动使用 `E:\Conda\envs\vi\python.exe -m rgain_parser`（可用 `RGAIN_PYTHON` 覆盖） |
-| 产品（release） | 自动启动同目录 / `sidecars/` 下的 PyInstaller 产物 `rgain_parser[.exe]`（可用 `RGAIN_SIDECAR` 覆盖） |
-
-Sidecar 自检（不启动 Tauri）：
+仅前端：
 
 ```bash
-E:\Conda\envs\vi\python.exe python/smoke_test.py
+npm run dev
 ```
 
-设置页：API Base / Key / Model（Key 仅后端保存，前端只显示脱敏串）+「测试连接」。  
-Phase B：左栏选目录 →「开始解析」→ 图 JSON 写入 SQLite，历史可回放。  
-Phase C：中部 2D/3D 逻辑舞台（点节点开右侧讲解；无数据时显示 demo 图）。  
-Phase D：设置里配置划词快捷键（默认 `Ctrl+Shift+E`）→ 选中文本或当前节点 → 弹窗释义并写入 SQLite；历史列表可回放并高亮当前 run。
+发布构建：
 
-## 文档索引
+```bash
+npm run tauri build
+```
 
-- [技术选型](./docs/tech_selection.md)
-- [解析：Rust vs Python](./docs/parsing_rust_vs_python.md)
-- [实现计划](./docs/plan.md)
-- [设计色板](./docs/design_tokens.md)
+开发默认端口 **20015**（≥ 20000）。可在设置页修改，或写入仓库根目录 `rgain.dev.json`；也可用环境变量 `RGAIN_DEV_PORT` 覆盖。改端口后需重启 `tauri dev`。
+
+### Python Sidecar（图书解析）
+
+```bash
+# 激活你的开发环境后
+pip install -r python/requirements.txt
+```
+
+| 模式 | 行为 |
+|------|------|
+| 开发（debug） | 使用 Python 模块 `rgain_parser`；可用 `RGAIN_PYTHON` 指定解释器 |
+| 产品（release） | 启动同目录或 `sidecars/` 下的 `rgain_parser[.exe]`；可用 `RGAIN_SIDECAR` 覆盖 |
+
+自检（不启动 Tauri）：
+
+```bash
+python python/smoke_test.py
+```
+
+## 支持的文件类型
+
+- **图书**：`.pdf`、`.epub`、`.mobi`
+- **代码 / 文本**（目录扫描）：常见源码与配置扩展名（如 `md`、`py`、`rs`、`ts`、`vue`、`go`、`json` 等）
+- 自动跳过：`.git`、`node_modules`、`target`、`dist`、`__pycache__`、虚拟环境等目录
+
+## 使用流程
+
+1. 在设置中填写 LLM API Base、Key、Model，并「测试连接」
+2. 左栏选择目录或图书 →「开始解析」
+3. 中部查看逻辑图，点击节点阅读右侧讲解
+4. 需要时划词 / 快捷键触发术语释义
+
+## 配置与数据
+
+| 项 | 说明 |
+|----|------|
+| `rgain.dev.json` | 开发端口等本地同步配置 |
+| `RGAIN_PYTHON` | 覆盖开发态 Python 路径 |
+| `RGAIN_SIDECAR` | 强制使用指定 sidecar 二进制 |
+| `RGAIN_DEV_PORT` | 覆盖 Vite 开发端口 |
+| 应用数据 | 本机 `app_data_dir/rgain.sqlite3`（项目、运行、图、设置） |
+
+密钥与 `.env` 请勿提交；仓库已忽略 `.env`、本地数据库与构建产物。
+
+## 仓库说明
+
+- 版本：`0.1.0`（早期可用）
+- 内部设计稿与选型笔记在本地 `docs/`（默认不纳入 Git），公开说明以本 README 为准
+
+## 许可证
+
+本项目采用 [Apache License 2.0](./LICENSE)。
