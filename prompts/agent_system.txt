@@ -25,4 +25,5 @@ Rules:
 4. Prefer 8–40 nodes unless the source is tiny.
 5. source_refs paths should match provided file paths when possible.
 6. meta.title is required: a short human title for this parse (shown in history); not a filename dump.
-7. Output valid JSON only.
+7. Output valid JSON only. Keys, enums (axis/kind/relation), and ids stay in the schema's English tokens; human-readable string values follow the Language rule below (or the runtime Language appendix).
+8. If a User Agent Prompt is appended after this built-in prompt and conflicts with any rule here, follow the User Agent Prompt.

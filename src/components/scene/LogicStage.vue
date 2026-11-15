@@ -7,14 +7,17 @@ import type {
     LogicViewMode,
 } from "../../types/graph";
 import { demo_graph } from "../../lib/layout_trunk";
+import { use_i18n } from "../../i18n";
+import GraphHudTitle from "./GraphHudTitle.vue";
 import LogicFlow2d from "./LogicFlow2d.vue";
 import LogicScene from "./LogicScene.vue";
 
 const props = defineProps<{
     graph: GraphPayload | null;
     run_id?: number | null;
-    sidecar_status: string;
 }>();
+
+const { t } = use_i18n();
 
 const emit = defineEmits<{
     select_node: [node: GraphNode];
@@ -70,88 +73,59 @@ async function on_reset_layout() {
     <section class="stage">
         <div class="stage_toolbar">
             <div class="mode_toggle" role="tablist" aria-label="Logic view mode">
-                <button
-                    type="button"
-                    role="tab"
-                    class="mode_btn"
-                    :aria-selected="view_mode === '2d'"
-                    :class="{ active: view_mode === '2d' }"
-                    @click="set_mode('2d')"
-                >
-                    2D Flow
+                <button type="button" role="tab" class="mode_btn" :aria-selected="view_mode === '2d'"
+                    :class="{ active: view_mode === '2d' }" @click="set_mode('2d')">
+                    {{ t("stage.mode_2d") }}
                 </button>
-                <button
-                    type="button"
-                    role="tab"
-                    class="mode_btn"
-                    :aria-selected="view_mode === '3d'"
-                    :class="{ active: view_mode === '3d' }"
-                    @click="set_mode('3d')"
-                >
-                    3D Trunk
+                <button type="button" role="tab" class="mode_btn" :aria-selected="view_mode === '3d'"
+                    :class="{ active: view_mode === '3d' }" @click="set_mode('3d')" :disabled="true"
+                    :title="t('stage.mode_3d_disabled')">
+                    {{ t("stage.mode_3d") }}
                 </button>
             </div>
 
             <label v-if="view_mode === '2d'" class="layout_pick">
-                <span class="sr_only">2D layout</span>
-                <select v-model="flow_layout" aria-label="2D layout preset">
-                    <option
-                        v-for="opt in layout_options"
-                        :key="opt.value"
-                        :value="opt.value"
-                    >
+                <span class="sr_only">{{ t("stage.layout_preset") }}</span>
+                <select v-model="flow_layout" :aria-label="t('stage.layout_preset')">
+                    <option v-for="opt in layout_options" :key="opt.value" :value="opt.value">
                         {{ opt.label }}
                     </option>
                 </select>
             </label>
 
-            <button
-                v-if="view_mode === '2d'"
-                type="button"
-                class="reset_btn"
-                title="清除已保存位置并重新自动布局"
-                @click="on_reset_layout"
-            >
-                重置布局
+            <button v-if="view_mode === '2d'" type="button" class="reset_btn"
+                :title="t('stage.reset_layout_title')" @click="on_reset_layout">
+                {{ t("stage.reset_layout") }}
             </button>
 
-            <div class="meta_chips">
-                <span>{{ source.meta.axis }}</span>
-                <span>{{ source.nodes.length }} nodes</span>
-                <span>{{ source.edges.length }} edges</span>
-                <span v-if="is_demo">demo</span>
-                <span v-else-if="has_run">run #{{ run_id }}</span>
+            <div class="toolbar_right">
+                <div class="meta_chips">
+                    <span>{{ source.meta.axis }}</span>
+                    <span>{{ source.nodes.length }} nodes</span>
+                    <span>{{ source.edges.length }} edges</span>
+                    <span v-if="is_demo">{{ t("common.demo") }}</span>
+                    <span v-else-if="has_run">run #{{ run_id }}</span>
+                </div>
+                <div class="legend_chips" role="group" :aria-label="t('stage.legend')">
+                    <span class="legend_chip" data-kind="trunk">
+                        <i class="swatch" aria-hidden="true" />
+                        {{ t("stage.legend_trunk") }}
+                    </span>
+                    <span class="legend_chip" data-kind="branch">
+                        <i class="swatch" aria-hidden="true" />
+                        {{ t("stage.legend_branch") }}
+                    </span>
+                </div>
             </div>
         </div>
 
         <div class="stage_body">
-            <LogicFlow2d
-                v-if="view_mode === '2d'"
-                ref="flow2d_ref"
-                :graph="graph"
-                :run_id="run_id ?? null"
-                :layout_preset="flow_layout"
-                :selected_id="selected_id"
-                @select_node="on_select"
-            />
-            <LogicScene
-                v-else
-                :graph="graph"
-                :sidecar_status="sidecar_status"
-                @select_node="on_select"
-            />
+            <LogicFlow2d v-if="view_mode === '2d'" ref="flow2d_ref" :graph="graph" :run_id="run_id ?? null"
+                :layout_preset="flow_layout" :selected_id="selected_id" @select_node="on_select" />
+            <LogicScene v-else :graph="graph" @select_node="on_select" />
 
             <div v-if="view_mode === '2d'" class="hud_2d">
-                <p class="brand_mark">Rgain</p>
-                <h1>{{ source.meta.title }}</h1>
-                <p class="desc">{{ source.meta.summary }}</p>
-                <p class="hint">
-                    拖拽节点调整位置会自动保存
-                    <template v-if="has_run">到 SQLite</template>
-                    <template v-else>（demo 仅内存）</template>
-                    · 滚轮缩放 · 拖拽背景平移
-                </p>
-                <p class="status">Sidecar：{{ sidecar_status }}</p>
+                <GraphHudTitle tone="light" :title="source.meta.title" :summary="source.meta.summary" />
             </div>
         </div>
     </section>
@@ -173,8 +147,8 @@ async function on_reset_layout() {
     display: flex;
     align-items: center;
     gap: 0.55rem;
-    z-index: 4;
-    height: 34px;
+    z-index: 16;
+    height: var(--stage_toolbar_height);
     padding: 0 0.65rem;
     border-bottom: 1px solid var(--color_line);
     background: color-mix(in srgb, var(--color_surface) 88%, var(--color_surface_2));
@@ -199,6 +173,11 @@ async function on_reset_layout() {
     font-weight: 650;
     letter-spacing: 0.02em;
     cursor: pointer;
+}
+
+.mode_btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
 }
 
 .mode_btn.active {
@@ -240,21 +219,53 @@ async function on_reset_layout() {
     border-color: var(--color_line_strong);
 }
 
-.meta_chips {
+.toolbar_right {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin-left: auto;
+}
+
+.meta_chips,
+.legend_chips {
     display: flex;
     flex-wrap: wrap;
     gap: 0.3rem;
-    margin-left: auto;
     font-size: 0.68rem;
     color: var(--color_muted);
 }
 
-.meta_chips span {
+.meta_chips span,
+.legend_chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.28rem;
     padding: 0.1rem 0.4rem;
     border: 1px solid var(--color_line);
     border-radius: 999px;
     background: var(--color_surface_3);
     color: var(--color_muted);
+    user-select: none;
+    pointer-events: none;
+}
+
+.legend_chip .swatch {
+    display: block;
+    width: 0.45rem;
+    height: 0.45rem;
+    border-radius: 999px;
+    background: currentColor;
+}
+
+.legend_chip[data-kind="trunk"] {
+    border-color: color-mix(in srgb, var(--color_accent) 45%, var(--color_line));
+    color: var(--color_accent_deep);
+}
+
+.legend_chip[data-kind="branch"] {
+    border-color: color-mix(in srgb, var(--color_brand) 45%, var(--color_line));
+    color: var(--color_brand);
 }
 
 .stage_body {
@@ -275,45 +286,6 @@ async function on_reset_layout() {
     z-index: 2;
     max-width: min(22rem, 55%);
     pointer-events: none;
-}
-
-.brand_mark {
-    margin: 0;
-    font-size: 0.72rem;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--color_brand);
-}
-
-.hud_2d h1 {
-    margin: 0.25rem 0 0.35rem;
-    font-size: 1.05rem;
-    font-weight: 650;
-    color: var(--color_ink);
-}
-
-.desc {
-    margin: 0;
-    color: var(--color_muted);
-    font-size: 0.78rem;
-    line-height: 1.4;
-}
-
-.hint {
-    margin: 0.55rem 0 0;
-    font-size: 0.7rem;
-    color: var(--color_faint);
-}
-
-.status {
-    display: inline-block;
-    margin: 0.55rem 0 0;
-    padding: 0.28rem 0.65rem;
-    border-radius: 999px;
-    border: 1px solid var(--color_line);
-    background: color-mix(in srgb, var(--color_surface_3) 82%, transparent);
-    font-size: 0.72rem;
-    color: var(--color_body);
 }
 
 .sr_only {

@@ -46,8 +46,13 @@ const host = ref<HTMLElement | null>(null);
 let cy: Core | null = null;
 let resize_observer: ResizeObserver | null = null;
 let save_timer: ReturnType<typeof setTimeout> | null = null;
+let hover_clear_timer: ReturnType<typeof setTimeout> | null = null;
+let hover_node_id: string | null = null;
 let applying_layout = false;
 let mount_seq = 0;
+
+/** Delay before clearing hover so moving across gaps/edges does not flash. */
+const HOVER_CLEAR_MS = 90;
 
 const source_graph = () => props.graph ?? demo_graph();
 
@@ -111,8 +116,8 @@ function build_stylesheet() {
                 "border-color": line,
                 "border-style": "dashed",
                 "text-valign": "top",
-                "text-halign": "left",
-                "text-margin-y": 14,
+                "text-halign": "center",
+                "text-margin-y": -10,
                 "text-margin-x": 8,
                 color: muted,
                 "font-size": 11,
@@ -122,10 +127,10 @@ function build_stylesheet() {
             },
         },
         {
+            // Fill only — keep trunk/branch border colors so selection
+            // does not recolor a branch as if it were a trunk.
             selector: "node:selected",
             style: {
-                "border-width": 2.5,
-                "border-color": accent,
                 "background-color": selected_bg,
             },
         },
@@ -144,6 +149,9 @@ function build_stylesheet() {
                 "text-background-color": surface,
                 "text-background-opacity": 0.9,
                 "text-background-padding": "2px",
+                // Let pointer events pass through edges so hover does not
+                // flicker when the cursor crosses a link between nodes.
+                events: "no",
             },
         },
         {
@@ -156,9 +164,9 @@ function build_stylesheet() {
             },
         },
         {
-            selector: ".dimmed",
+            selector: "node.content.hover",
             style: {
-                opacity: 0.22,
+                "border-width": 2.2,
             },
         },
     ] as cytoscape.StylesheetStyle[];
@@ -283,6 +291,8 @@ async function mount_cy() {
         clearTimeout(save_timer);
         save_timer = null;
     }
+    clear_hover_highlight();
+    hover_node_id = null;
     cy?.destroy();
     cy = null;
 
@@ -310,18 +320,27 @@ async function mount_cy() {
     cy.on("tap", (ev) => {
         if (ev.target === cy) {
             emit("hover_node", null);
+            clear_hover_highlight();
         }
     });
 
     cy.on("mouseover", "node.content", (ev) => {
-        emit("hover_node", ev.target.id());
-        highlight_neighborhood(ev.target.id());
+        if (hover_clear_timer) {
+            clearTimeout(hover_clear_timer);
+            hover_clear_timer = null;
+        }
+        const id = ev.target.id() as string;
+        emit("hover_node", id);
+        set_hover_highlight(id);
     });
 
     cy.on("mouseout", "node.content", () => {
-        emit("hover_node", null);
-        clear_dim();
-        sync_selection_style();
+        if (hover_clear_timer) clearTimeout(hover_clear_timer);
+        hover_clear_timer = setTimeout(() => {
+            hover_clear_timer = null;
+            emit("hover_node", null);
+            set_hover_highlight(null);
+        }, HOVER_CLEAR_MS);
     });
 
     cy.on("dragfree", "node", () => {
@@ -340,20 +359,33 @@ async function mount_cy() {
     await apply_layout_or_elk();
 }
 
-function highlight_neighborhood(node_id: string) {
+/**
+ * Edge-only hover focus: no full-graph opacity dim (that caused strobing
+ * when mouseover/mouseout flipped all elements on every move).
+ */
+function set_hover_highlight(node_id: string | null) {
     if (!cy) return;
+    if (hover_node_id === node_id) return;
+
+    if (hover_node_id) {
+        cy.getElementById(hover_node_id).removeClass("hover");
+    }
+    cy.edges().removeClass("highlight");
+    hover_node_id = node_id;
+
+    if (!node_id) return;
     const node = cy.getElementById(node_id);
     if (node.empty()) return;
-    const neighborhood = node.closedNeighborhood();
-    cy.elements().addClass("dimmed");
-    neighborhood.removeClass("dimmed");
-    neighborhood.filter("edge").addClass("highlight");
+    node.addClass("hover");
+    node.connectedEdges().addClass("highlight");
 }
 
-function clear_dim() {
-    if (!cy) return;
-    cy.elements().removeClass("dimmed");
-    cy.edges().removeClass("highlight");
+function clear_hover_highlight() {
+    if (hover_clear_timer) {
+        clearTimeout(hover_clear_timer);
+        hover_clear_timer = null;
+    }
+    set_hover_highlight(null);
 }
 
 function sync_selection_style() {
@@ -397,6 +429,7 @@ onBeforeUnmount(() => {
         clearTimeout(save_timer);
         save_timer = null;
     }
+    clear_hover_highlight();
     resize_observer?.disconnect();
     resize_observer = null;
     cy?.destroy();
@@ -439,8 +472,7 @@ watch(theme, () => {
     position: absolute;
     inset: 0;
     background:
-        radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--color_line) 70%, transparent) 1px, transparent 0)
-        0 0 / 18px 18px,
+        radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--color_line) 70%, transparent) 1px, transparent 0) 0 0 / 18px 18px,
         var(--color_surface);
 }
 </style>

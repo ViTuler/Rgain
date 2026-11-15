@@ -13,9 +13,13 @@ pub struct AppSettings {
     pub api_base_url: String,
     pub api_key: String,
     pub model: String,
-    /// Global agent system prompt shared across projects.
+    /// User-managed agent prompt (optional). Built-in schema prompt is separate.
     pub agent_prompt: String,
+    /// UI + LLM output locale: zh | en | ja | ko
+    pub ui_locale: String,
     pub explain_hotkey: String,
+    /// Show selection magnifier for term explain.
+    pub selection_explain_enabled: bool,
     pub dev_port: u16,
     pub mcp_enabled: bool,
     pub mcp_server_url: String,
@@ -31,10 +35,32 @@ pub struct PublicSettings {
     pub api_key_set: bool,
     pub model: String,
     pub agent_prompt: String,
+    #[serde(default = "default_ui_locale")]
+    pub ui_locale: String,
     pub explain_hotkey: String,
+    #[serde(default = "default_true")]
+    pub selection_explain_enabled: bool,
     pub dev_port: u16,
     pub mcp_enabled: bool,
     pub mcp_server_url: String,
+}
+
+fn default_ui_locale() -> String {
+    "zh".into()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+pub fn normalize_ui_locale(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "en" | "en-us" | "en_gb" => "en".into(),
+        "ja" | "jp" | "ja-jp" => "ja".into(),
+        "ko" | "kr" | "ko-kr" => "ko".into(),
+        "zh" | "zh-cn" | "zh-hans" | "cn" => "zh".into(),
+        _ => "zh".into(),
+    }
 }
 
 impl Default for AppSettings {
@@ -44,7 +70,9 @@ impl Default for AppSettings {
             api_key: String::new(),
             model: "gpt-4o-mini".into(),
             agent_prompt: String::new(),
+            ui_locale: "zh".into(),
             explain_hotkey: "Ctrl+Shift+E".into(),
+            selection_explain_enabled: true,
             dev_port: crate::dev_port::DEFAULT_DEV_PORT,
             mcp_enabled: false,
             mcp_server_url: String::new(),
@@ -106,7 +134,9 @@ impl AppSettings {
             api_key_set: set,
             model: self.model.clone(),
             agent_prompt: self.agent_prompt.clone(),
+            ui_locale: normalize_ui_locale(&self.ui_locale),
             explain_hotkey: self.explain_hotkey.clone(),
+            selection_explain_enabled: self.selection_explain_enabled,
             dev_port: self.dev_port,
             mcp_enabled: self.mcp_enabled,
             mcp_server_url: self.mcp_server_url.clone(),
@@ -149,7 +179,8 @@ fn migrate(conn: &Connection) -> Result<(), String> {
             model TEXT,
             status TEXT NOT NULL DEFAULT 'pending',
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            finished_at TEXT
+            finished_at TEXT,
+            title TEXT
         );
 
         CREATE TABLE IF NOT EXISTS file_extracts (
@@ -280,9 +311,14 @@ pub fn get_settings(conn: &Connection) -> Result<AppSettings, String> {
             "api_key" => settings.api_key = value,
             "model" => settings.model = value,
             "agent_prompt" => settings.agent_prompt = value,
+            "ui_locale" => settings.ui_locale = normalize_ui_locale(&value),
             // python_path legacy rows ignored — sidecar resolves dev/prod automatically
             "python_path" => {}
             "explain_hotkey" => settings.explain_hotkey = value,
+            "selection_explain_enabled" => {
+                settings.selection_explain_enabled =
+                    matches!(value.as_str(), "1" | "true" | "TRUE" | "yes")
+            }
             "mcp_enabled" => {
                 settings.mcp_enabled = matches!(value.as_str(), "1" | "true" | "TRUE" | "yes")
             }
@@ -296,9 +332,7 @@ pub fn get_settings(conn: &Connection) -> Result<AppSettings, String> {
             _ => {}
         }
     }
-    if settings.agent_prompt.trim().is_empty() {
-        settings.agent_prompt = crate::ingest::load_agent_prompt();
-    }
+    settings.ui_locale = normalize_ui_locale(&settings.ui_locale);
     Ok(settings)
 }
 
@@ -307,17 +341,20 @@ pub fn save_settings(conn: &Connection, settings: &AppSettings) -> Result<(), St
     let next_port = crate::dev_port::clamp_dev_port(settings.dev_port);
     let dev_port = next_port.to_string();
     let mcp_enabled = if settings.mcp_enabled { "true" } else { "false" };
-    let agent_prompt = if settings.agent_prompt.trim().is_empty() {
-        crate::ingest::load_agent_prompt()
+    let selection_explain_enabled = if settings.selection_explain_enabled {
+        "true"
     } else {
-        settings.agent_prompt.clone()
+        "false"
     };
+    let ui_locale = normalize_ui_locale(&settings.ui_locale);
     let pairs = [
         ("api_base_url", settings.api_base_url.as_str()),
         ("api_key", settings.api_key.as_str()),
         ("model", settings.model.as_str()),
-        ("agent_prompt", agent_prompt.as_str()),
+        ("agent_prompt", settings.agent_prompt.as_str()),
+        ("ui_locale", ui_locale.as_str()),
         ("explain_hotkey", settings.explain_hotkey.as_str()),
+        ("selection_explain_enabled", selection_explain_enabled),
         ("dev_port", dev_port.as_str()),
         ("mcp_enabled", mcp_enabled),
         ("mcp_server_url", settings.mcp_server_url.as_str()),
@@ -343,7 +380,9 @@ pub fn save_public_settings(conn: &Connection, incoming: &PublicSettings) -> Res
     current.api_base_url = incoming.api_base_url.clone();
     current.model = incoming.model.clone();
     current.agent_prompt = incoming.agent_prompt.clone();
+    current.ui_locale = normalize_ui_locale(&incoming.ui_locale);
     current.explain_hotkey = incoming.explain_hotkey.clone();
+    current.selection_explain_enabled = incoming.selection_explain_enabled;
     current.dev_port = crate::dev_port::clamp_dev_port(incoming.dev_port);
     current.mcp_enabled = incoming.mcp_enabled;
     current.mcp_server_url = incoming.mcp_server_url.clone();

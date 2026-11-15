@@ -64,18 +64,42 @@ pub fn chat_completion(settings: &AppSettings, system: &str, user: &str) -> Resu
         .ok_or_else(|| "llm_empty_content".into())
 }
 
-fn resolve_system_prompt(settings: &AppSettings) -> String {
-    if settings.agent_prompt.trim().is_empty() {
-        load_agent_prompt()
-    } else {
-        settings.agent_prompt.clone()
+fn language_label(ui_locale: &str) -> &'static str {
+    match crate::db::normalize_ui_locale(ui_locale).as_str() {
+        "en" => "English",
+        "ja" => "Japanese",
+        "ko" => "Korean",
+        _ => "Chinese (Simplified)",
     }
+}
+
+fn language_appendix(ui_locale: &str) -> String {
+    let lang = language_label(ui_locale);
+    format!(
+        "Language appendix:\nWrite all human-readable string fields (meta.title, meta.summary, module names, node labels, explain, term text) in {lang}. Keep JSON keys, ids, and enum tokens (axis/kind/relation) unchanged."
+    )
+}
+
+/// Built-in schema prompt + language appendix + optional user prompt (user wins conflicts).
+fn resolve_system_prompt(settings: &AppSettings) -> String {
+    let mut system = load_agent_prompt();
+    system.push_str("\n\n");
+    system.push_str(&language_appendix(&settings.ui_locale));
+    let user = settings.agent_prompt.trim();
+    if !user.is_empty() {
+        system.push_str(
+            "\n\n--- User Agent Prompt (overrides conflicting instructions above) ---\n",
+        );
+        system.push_str(user);
+    }
+    system
 }
 
 pub fn generate_graph(settings: &AppSettings, corpus: &str) -> Result<Value, String> {
     let system = resolve_system_prompt(settings);
     let user = format!(
-        "Analyze the following extracts and produce the graph JSON.\n\n{}",
+        "Analyze the following extracts and produce the graph JSON.\nLanguage for human-readable fields: {}.\n\n{}",
+        language_label(&settings.ui_locale),
         corpus
     );
 
@@ -126,14 +150,26 @@ pub fn explain_term(settings: &AppSettings, term: &str, context: &str) -> Result
     if term.is_empty() {
         return Err("term_empty".into());
     }
-    let system = load_term_prompt();
+    let mut system = load_term_prompt();
+    system.push_str("\n\n");
+    system.push_str(&language_appendix(&settings.ui_locale));
+    let user_prompt = settings.agent_prompt.trim();
+    if !user_prompt.is_empty() {
+        system.push_str(
+            "\n\n--- User Agent Prompt (overrides conflicting instructions above) ---\n",
+        );
+        system.push_str(user_prompt);
+    }
     let mut user = format!("Term:\n{term}\n");
     if !context.trim().is_empty() {
         user.push_str("\nContext:\n");
         user.push_str(context.trim());
         user.push('\n');
     }
-    user.push_str("\nExplain the term now.");
+    user.push_str(&format!(
+        "\nExplain the term now in {}.",
+        language_label(&settings.ui_locale)
+    ));
     chat_completion(settings, &system, &user)
 }
 

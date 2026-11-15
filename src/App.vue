@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import LeftPanel from "./components/panels/LeftPanel.vue";
@@ -10,9 +10,11 @@ import TermExplainDialog from "./components/dialogs/TermExplainDialog.vue";
 import ThemeSwitch from "./components/chrome/ThemeSwitch.vue";
 import IconButton from "./components/chrome/IconButton.vue";
 import WindowControls from "./components/chrome/WindowControls.vue";
+import SelectionExplainFab from "./components/chrome/SelectionExplainFab.vue";
 import { use_explain_hotkey } from "./composables/use_explain_hotkey";
 import { use_settings } from "./composables/use_settings";
 import { use_theme } from "./composables/use_theme";
+import { set_locale, use_i18n } from "./i18n";
 import type { AppSettings } from "./types/settings";
 import type { GraphNode, GraphPayload } from "./types/graph";
 import type { IngestResult, ProjectRow, RunRow } from "./types/project";
@@ -20,6 +22,7 @@ import type { ExplainTermResult } from "./types/term";
 
 const { settings, load_settings, save_settings } = use_settings();
 const { theme, toggle_theme, init_theme } = use_theme();
+const { t } = use_i18n();
 
 const show_settings = ref(false);
 const show_explain = ref(false);
@@ -27,6 +30,8 @@ const show_term_dialog = ref(false);
 const term_busy = ref(false);
 const term_error = ref("");
 const term_draft = ref({ term: "", explanation: "", context: "" });
+const selection_term = ref("");
+const selection_fab_pos = ref({ left: 0, top: 0 });
 const busy = ref(false);
 const settings_message = ref("");
 const sidecar_status = ref("未检测");
@@ -45,6 +50,16 @@ const selected_node = ref<GraphNode | null>(null);
 
 const graph_title = computed(() => current_graph.value?.meta.title || "");
 const explain_hotkey = computed(() => settings.value.explain_hotkey || "Ctrl+Shift+E");
+const selection_explain_enabled = computed(
+    () => settings.value.selection_explain_enabled !== false,
+);
+const show_selection_fab = computed(
+    () =>
+        selection_explain_enabled.value &&
+        !show_settings.value &&
+        !show_term_dialog.value &&
+        selection_term.value.length > 0,
+);
 
 const editing_settings = computed({
     get: () => draft_settings.value ?? settings.value,
@@ -53,12 +68,51 @@ const editing_settings = computed({
     },
 });
 
-const project_label = computed(() => project.value?.title || "未打开项目");
+const project_label = computed(() => project.value?.title || t("messages.project_none"));
 const project_path = computed(() => project.value?.root_path || "");
 
 use_explain_hotkey(explain_hotkey, () => {
     void trigger_term_explain();
 });
+
+function read_selection_text(): string {
+    return window.getSelection()?.toString().trim().slice(0, 200) || "";
+}
+
+function read_selection_anchor(): { left: number; top: number } | null {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
+    const rect = sel.getRangeAt(0).getBoundingClientRect();
+    if (rect.width <= 0 && rect.height <= 0) return null;
+    return { left: rect.right, top: rect.top };
+}
+
+function refresh_selection_term() {
+    if (!selection_explain_enabled.value || show_settings.value || show_term_dialog.value) {
+        selection_term.value = "";
+        return;
+    }
+    const text = read_selection_text();
+    const anchor = read_selection_anchor();
+    if (text && anchor) {
+        selection_term.value = text;
+        selection_fab_pos.value = anchor;
+    } else {
+        selection_term.value = "";
+    }
+}
+
+function on_selection_mouse_up() {
+    // Defer so the browser finishes the selection range.
+    window.setTimeout(refresh_selection_term, 0);
+}
+
+function on_selection_scroll_or_resize() {
+    if (!selection_term.value) return;
+    const anchor = read_selection_anchor();
+    if (anchor) selection_fab_pos.value = anchor;
+    else selection_term.value = "";
+}
 
 onMounted(async () => {
     init_theme();
@@ -66,6 +120,17 @@ onMounted(async () => {
     draft_settings.value = { ...settings.value };
     await refresh_runs();
     await refresh_sidecar_status();
+    document.addEventListener("mouseup", on_selection_mouse_up);
+    document.addEventListener("keyup", refresh_selection_term);
+    window.addEventListener("scroll", on_selection_scroll_or_resize, true);
+    window.addEventListener("resize", on_selection_scroll_or_resize);
+});
+
+onBeforeUnmount(() => {
+    document.removeEventListener("mouseup", on_selection_mouse_up);
+    document.removeEventListener("keyup", refresh_selection_term);
+    window.removeEventListener("scroll", on_selection_scroll_or_resize, true);
+    window.removeEventListener("resize", on_selection_scroll_or_resize);
 });
 
 async function refresh_runs() {
@@ -95,6 +160,7 @@ function open_settings() {
 
 function close_settings() {
     draft_settings.value = { ...settings.value };
+    set_locale(settings.value.ui_locale);
     show_settings.value = false;
 }
 
@@ -109,10 +175,10 @@ async function on_save_settings() {
     try {
         await save_settings(draft_settings.value);
         draft_settings.value = { ...settings.value };
-        settings_message.value = "已保存到本地 SQLite";
+        settings_message.value = t("settings.done");
         await refresh_sidecar_status();
     } catch (err) {
-        settings_message.value = `保存失败：${String(err)}`;
+        settings_message.value = t("settings.save_failed", { error: String(err) });
     } finally {
         busy.value = false;
     }
@@ -147,7 +213,9 @@ async function on_test_llm() {
                 api_key: draft_settings.value.api_key,
             },
         });
-        llm_message.value = result.ok ? result.detail : `失败：${result.detail}`;
+        llm_message.value = result.ok
+            ? result.detail
+            : t("settings.llm_failed", { detail: result.detail });
     } catch (err) {
         llm_message.value = String(err);
     } finally {
@@ -160,20 +228,20 @@ async function on_pick_folder() {
         const selected = await open({
             directory: true,
             multiple: false,
-            title: "选择代码或书籍目录",
+            title: t("messages.pick_folder_title"),
         });
         if (!selected || Array.isArray(selected)) return;
         const row = await invoke<ProjectRow>("open_project", {
             args: { root_path: selected, kind: "code" },
         });
         project.value = row;
-        ingest_message.value = `已打开：${row.root_path}`;
+        ingest_message.value = t("messages.opened", { path: row.root_path });
         current_graph.value = null;
         selected_label.value = "";
         selected_node.value = null;
         active_run_id.value = null;
     } catch (err) {
-        ingest_message.value = `打开失败：${String(err)}`;
+        ingest_message.value = t("messages.open_failed", { error: String(err) });
     }
 }
 
@@ -183,24 +251,19 @@ function on_select_node(node: GraphNode) {
     show_explain.value = true;
 }
 
-async function on_reset_prompt() {
+function on_reset_prompt() {
     if (!draft_settings.value) return;
-    try {
-        const builtin = await invoke<string>("default_agent_prompt");
-        draft_settings.value = { ...draft_settings.value, agent_prompt: builtin };
-        settings_message.value = "已填入内置 Agent Prompt（未保存）";
-    } catch (err) {
-        settings_message.value = `恢复失败：${String(err)}`;
-    }
+    draft_settings.value = { ...draft_settings.value, agent_prompt: "" };
+    settings_message.value = t("settings.prompt_cleared");
 }
 
 async function on_run_ingest() {
     if (!project.value) {
-        ingest_message.value = "请先选择目录";
+        ingest_message.value = t("messages.need_folder");
         return;
     }
     ingest_busy.value = true;
-    ingest_message.value = "扫描与抽取中…";
+    ingest_message.value = t("messages.ingesting");
     try {
         const result = await invoke<IngestResult>("run_ingest", {
             args: {
@@ -215,15 +278,23 @@ async function on_run_ingest() {
             selected_node.value = null;
             show_explain.value = true;
             const warn = result.warnings.length ? ` · warnings ${result.warnings.length}` : "";
-            ingest_message.value = `完成 run #${result.run_id} · 文件 ${result.files_processed}（缓存 ${result.files_cached}）${warn}`;
+            ingest_message.value = t("messages.ingest_ok", {
+                id: result.run_id,
+                files: result.files_processed,
+                cached: result.files_cached,
+                warn,
+            });
         } else {
             current_graph.value = null;
             selected_node.value = null;
             const detail = result.error || result.warnings.join("; ") || "unknown";
-            ingest_message.value = `失败 run #${result.run_id}：${detail}`;
+            ingest_message.value = t("messages.ingest_fail", {
+                id: result.run_id,
+                detail,
+            });
         }
     } catch (err) {
-        ingest_message.value = `解析失败：${String(err)}`;
+        ingest_message.value = t("messages.ingest_error", { error: String(err) });
     } finally {
         ingest_busy.value = false;
     }
@@ -235,7 +306,7 @@ async function on_open_run(run_id: number) {
             runId: run_id,
         });
         if (!graph) {
-            ingest_message.value = `run #${run_id} 无图快照`;
+            ingest_message.value = t("messages.no_graph", { id: run_id });
             return;
         }
         current_graph.value = graph;
@@ -243,21 +314,77 @@ async function on_open_run(run_id: number) {
         selected_label.value = graph.meta?.title || `run #${run_id}`;
         selected_node.value = null;
         show_explain.value = true;
-        ingest_message.value = `已加载历史 run #${run_id}`;
+        ingest_message.value = t("messages.loaded_run", { id: run_id });
     } catch (err) {
-        ingest_message.value = `加载失败：${String(err)}`;
+        ingest_message.value = t("messages.load_failed", { error: String(err) });
     }
 }
 
-function collect_term_payload(): { term: string; context: string } | null {
-    const selection = window.getSelection()?.toString().trim() || "";
+async function on_rename_run(payload: { run_id: number; title: string }) {
+    try {
+        await invoke("update_run_title", {
+            args: {
+                run_id: payload.run_id,
+                title: payload.title,
+            },
+        });
+        await refresh_runs();
+        if (active_run_id.value === payload.run_id) {
+            selected_label.value = payload.title;
+            if (current_graph.value?.meta) {
+                current_graph.value = {
+                    ...current_graph.value,
+                    meta: {
+                        ...current_graph.value.meta,
+                        title: payload.title,
+                    },
+                };
+            }
+        }
+        ingest_message.value = t("messages.renamed", { id: payload.run_id });
+    } catch (err) {
+        ingest_message.value = t("messages.rename_failed", { error: String(err) });
+    }
+}
+
+async function on_delete_run(run_id: number) {
+    const run = runs.value.find((r) => r.id === run_id);
+    const label = run?.title?.trim() || `Run #${run_id}`;
+    const ok = window.confirm(t("explorer.delete_confirm", { title: label }));
+    if (!ok) return;
+    try {
+        await invoke("delete_run", {
+            args: { run_id },
+        });
+        if (active_run_id.value === run_id) {
+            active_run_id.value = null;
+            current_graph.value = null;
+            selected_node.value = null;
+            selected_label.value = "";
+        }
+        await refresh_runs();
+        ingest_message.value = t("messages.deleted", { id: run_id });
+    } catch (err) {
+        ingest_message.value = t("messages.delete_failed", { error: String(err) });
+    }
+}
+
+function build_term_context(): string {
+    if (selected_node.value) {
+        return `node=${selected_node.value.label}\n${selected_node.value.explain}`.slice(0, 1200);
+    }
+    if (graph_title.value) {
+        return `graph=${graph_title.value}`.slice(0, 1200);
+    }
+    return "";
+}
+
+function collect_term_payload(
+    preferred_term?: string,
+): { term: string; context: string } | null {
+    const selection = (preferred_term || read_selection_text() || selection_term.value).trim();
     if (selection) {
-        const node_ctx = selected_node.value
-            ? `node=${selected_node.value.label}\n${selected_node.value.explain}`
-            : graph_title.value
-              ? `graph=${graph_title.value}`
-              : "";
-        return { term: selection.slice(0, 200), context: node_ctx.slice(0, 1200) };
+        return { term: selection.slice(0, 200), context: build_term_context() };
     }
     if (selected_node.value) {
         return {
@@ -268,9 +395,9 @@ function collect_term_payload(): { term: string; context: string } | null {
     return null;
 }
 
-async function trigger_term_explain() {
+async function trigger_term_explain(preferred_term?: string) {
     if (term_busy.value) return;
-    let payload = collect_term_payload();
+    let payload = collect_term_payload(preferred_term);
     if (!payload) {
         try {
             const clip = (await navigator.clipboard.readText()).trim();
@@ -286,11 +413,12 @@ async function trigger_term_explain() {
     }
     if (!payload) {
         term_draft.value = { term: "", explanation: "", context: "" };
-        term_error.value = "请先选中文本，或选中一个图节点后再按快捷键。";
+        term_error.value = t("term.need_selection");
         show_term_dialog.value = true;
         return;
     }
 
+    selection_term.value = "";
     term_busy.value = true;
     term_error.value = "";
     term_draft.value = {
@@ -319,6 +447,10 @@ async function trigger_term_explain() {
         term_busy.value = false;
     }
 }
+
+function on_selection_fab_explain() {
+    void trigger_term_explain(selection_term.value);
+}
 </script>
 
 <template>
@@ -326,12 +458,17 @@ async function trigger_term_explain() {
         <header class="top_bar">
             <div class="brand_block" data-tauri-drag-region>
                 <span class="brand">Rgain</span>
-                <span class="subtitle">brainstorm · local logic map</span>
+                <span class="subtitle">{{ t("app.brand_sub") }}</span>
             </div>
             <div class="drag_fill" data-tauri-drag-region />
             <div class="top_actions">
                 <ThemeSwitch :theme="theme" @toggle="toggle_theme" />
-                <IconButton label="切换讲解侧栏" :pressed="show_explain" @click="toggle_explain">
+                <IconButton
+                    class="explain_toggle"
+                    :label="t('app.toggle_explain')"
+                    :pressed="show_explain"
+                    @click="toggle_explain"
+                >
                     <svg viewBox="0 0 16 16" aria-hidden="true">
                         <path fill="currentColor"
                             d="M2 1.5A1.5 1.5 0 0 0 .5 3v10A1.5 1.5 0 0 0 2 14.5h12a1.5 1.5 0 0 0 1.5-1.5V3A1.5 1.5 0 0 0 14 1.5H2zm0 1h8.5v11H2a.5.5 0 0 1-.5-.5V3a.5.5 0 0 1 .5-.5zm9.5 0H14a.5.5 0 0 1 .5.5v10a.5.5 0 0 1-.5.5h-2.5v-11z" />
@@ -340,6 +477,13 @@ async function trigger_term_explain() {
                 <WindowControls />
             </div>
         </header>
+
+        <SelectionExplainFab
+            :visible="show_selection_fab"
+            :left="selection_fab_pos.left"
+            :top="selection_fab_pos.top"
+            @explain="on_selection_fab_explain"
+        />
 
         <div class="shell_body">
             <div class="workspace">
@@ -350,13 +494,15 @@ async function trigger_term_explain() {
                     :active_run_id="active_run_id"
                     :ingest_busy="ingest_busy"
                     :ingest_message="ingest_message"
+                    :sidecar_status="sidecar_status"
                     @open_settings="open_settings"
                     @pick_folder="on_pick_folder"
                     @run_ingest="on_run_ingest"
                     @open_run="on_open_run"
+                    @rename_run="on_rename_run"
+                    @delete_run="on_delete_run"
                 />
                 <LogicStage
-                    :sidecar_status="sidecar_status"
                     :graph="current_graph"
                     :run_id="active_run_id"
                     @select_node="on_select_node"
@@ -400,6 +546,7 @@ async function trigger_term_explain() {
 
 <style scoped>
 .app_shell {
+    position: relative;
     display: flex;
     flex-direction: column;
     height: 100%;
@@ -448,6 +595,15 @@ async function trigger_term_explain() {
     display: flex;
     align-items: center;
     gap: 0.2rem;
+}
+
+/* Explain-sidebar toggle: dark + pressed — light icon for titlebar contrast. */
+:global(html[data-theme="dark"]) .top_actions :deep(.explain_toggle.pressed) {
+    color: #e4e4e4;
+}
+
+:global(html[data-theme="dark"]) .top_actions :deep(.explain_toggle.pressed:hover) {
+    color: #e4e4e4;
 }
 
 .shell_body {

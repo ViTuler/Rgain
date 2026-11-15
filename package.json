@@ -2,7 +2,7 @@
     "name": "rgain",
     "private": true,
     "version": "0.1.0",
-    "description": "Rgain — local brainstorm 3D logic map over books and code",
+    "description": "Rgain — local 3D logic map over books and code",
     "type": "module",
     "scripts": {
         "dev": "vite",

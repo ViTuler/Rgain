@@ -63,6 +63,7 @@
   --panel_left_width: 240px;
   --panel_right_width: 320px;
   --header_height: 48px;
+  --stage_toolbar_height: 34px;
   --ease_soft: cubic-bezier(0.22, 0.61, 0.36, 1);
   --shadow_panel: 0 2px 16px -8px rgb(58 32 32 / 0.22);
 }

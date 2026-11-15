@@ -14,6 +14,8 @@ export type RunRow = {
   model: string | null;
   status: string;
   created_at: string;
+  /** History display title; seeded from graph meta.title. */
+  title: string | null;
 };
 
 export type IngestResult = {

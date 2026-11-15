@@ -319,6 +319,7 @@ fn run_ingest_sync(
     let corpus = ingest::build_corpus(&files);
     if corpus.trim().is_empty() {
         let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        let _ = db::set_run_title(&conn, run_id, &format!("Empty #{run_id}"));
         let _ = db::finish_run(&conn, run_id, "failed");
         return Ok(IngestResult {
             project_id: project.id,
