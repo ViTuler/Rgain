@@ -263,7 +263,7 @@ MCP 后续直接挂在同一 DB（Filamental 模式）：`search_nodes` / `get_s
 | MCP | Schema 与 DB 先设计好；Python MCP 二期 |
 | 不选 | Flutter 主栈；PySide 作唯一 GUI；全量解析纯 Rust |
 
-**一句话：** Tauri+Vue 做壳与 3D；Python sidecar 做文档解析与后续智能；Rust 只管编排与 SQLite；MCP 与 App 共用库。主色 `#75eec5` / `#ff1b1b`（见 `design_tokens.md`）。
+**一句话：** Tauri+Vue 做壳与 3D；Python sidecar 做文档解析与后续智能；Rust 只管编排与 SQLite；MCP 与 App 共用库。色板对齐 Rain：暖黑白 + 青红（见 `design_tokens.md`）。
 
 实现节奏见 [plan.md](./plan.md)。
 

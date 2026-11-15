@@ -40,6 +40,11 @@
 - 关键支路：`color_brand`（细描边，不大面积填）  
 - 模块 categorical：仍可用冷色环，但降饱和，避免压过红青
 
-## CSS
+## CSS / 主题
 
-见 `src/styles/tokens.css`。默认深色壳；`html[data_theme="light"]` 可切浅色 Rain 日间面。
+见 `src/styles/tokens.css`。
+
+- **默认 Light**（与 Rain 一致）：`:root` 为浅色暖白骨架  
+- **Dark**：`html[data-theme="dark"]`  
+- 主题仅前端：顶栏 sun/moon 切换，持久化 `localStorage.rgain_theme`（不写 Rust/SQLite，避免开发热重载）  
+- 3D 舞台区域仍使用 `--color_night` 深底

@@ -1,12 +1,11 @@
-# Phase A (health / echo): stdlib only — no pip packages required.
-# Phase B+:
-#   pymupdf
-#   ebooklib
-#   beautifulsoup4
-#   lxml
-#   httpx
-#   pydantic
-#
-# Install into conda env `vi` (never base), e.g.:
+# Install into conda env `vi` only (never base):
 #   conda activate vi
-#   pip install pymupdf ebooklib beautifulsoup4 lxml
+#   pip install -r python/requirements.txt
+#
+# Phase A health/echo works with stdlib alone.
+# Phase B PDF/EPUB extract:
+pymupdf>=1.24.0
+ebooklib>=0.18
+lxml>=5.0.0
+# optional nicer HTML cleanup for EPUB:
+beautifulsoup4>=4.12.0

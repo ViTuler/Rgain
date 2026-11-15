@@ -5,6 +5,8 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+const DEV_PYTHON: &str = r"E:\Conda\envs\vi\python.exe";
+
 pub struct SidecarState {
     pub child: Mutex<Option<SidecarProcess>>,
 }
@@ -13,13 +15,55 @@ pub struct SidecarProcess {
     pub child: Child,
     pub stdin: ChildStdin,
     pub reader: BufReader<std::process::ChildStdout>,
-    pub python_path: String,
+    pub launch_key: String,
     pub next_id: u64,
+}
+
+enum SidecarLaunch {
+    /// Dev: conda `vi` python -m rgain_parser
+    DevModule { python: PathBuf, cwd: PathBuf },
+    /// Prod: PyInstaller binary
+    BundledExe { exe: PathBuf },
+}
+
+impl SidecarLaunch {
+    fn key(&self) -> String {
+        match self {
+            Self::DevModule { python, cwd } => format!("dev:{}|{}", python.display(), cwd.display()),
+            Self::BundledExe { exe } => format!("exe:{}", exe.display()),
+        }
+    }
+
+    fn spawn(&self) -> Result<Child, String> {
+        match self {
+            Self::DevModule { python, cwd } => Command::new(python)
+                .arg("-u")
+                .arg("-m")
+                .arg("rgain_parser")
+                .current_dir(cwd)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| {
+                    format!(
+                        "spawn dev python failed: {e} (python={} cwd={})",
+                        python.display(),
+                        cwd.display()
+                    )
+                }),
+            Self::BundledExe { exe } => Command::new(exe)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("spawn bundled sidecar failed: {e} (exe={})", exe.display())),
+        }
+    }
 }
 
 pub fn resolve_python_root() -> PathBuf {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    // `tauri dev` cwd is usually `src-tauri` or repo root.
     let candidates = [
         cwd.join("python"),
         cwd.join("..").join("python"),
@@ -33,20 +77,69 @@ pub fn resolve_python_root() -> PathBuf {
     cwd.join("python")
 }
 
-pub fn ensure_sidecar(
-    state: &SidecarState,
-    python_path: &str,
-) -> Result<(), String> {
+fn bundled_exe_candidates() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            out.push(dir.join("rgain_parser.exe"));
+            out.push(dir.join("rgain_parser"));
+            out.push(dir.join("sidecars").join("rgain_parser.exe"));
+            out.push(dir.join("sidecars").join("rgain_parser"));
+            out.push(dir.join("resources").join("rgain_parser.exe"));
+            out.push(dir.join("resources").join("rgain_parser"));
+        }
+    }
+    out
+}
+
+fn resolve_launch() -> Result<SidecarLaunch, String> {
+    // Optional override for both modes.
+    if let Ok(override_path) = std::env::var("RGAIN_SIDECAR") {
+        let path = PathBuf::from(override_path);
+        if path.exists() {
+            return Ok(SidecarLaunch::BundledExe { exe: path });
+        }
+        return Err(format!("RGAIN_SIDECAR not found: {}", path.display()));
+    }
+
+    if cfg!(debug_assertions) {
+        let python = std::env::var("RGAIN_PYTHON")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(DEV_PYTHON));
+        if !python.exists() {
+            return Err(format!(
+                "dev python missing: {} (set RGAIN_PYTHON or install conda env vi)",
+                python.display()
+            ));
+        }
+        let cwd = resolve_python_root();
+        if !cwd.join("rgain_parser").exists() {
+            return Err(format!("python package not found under {}", cwd.display()));
+        }
+        return Ok(SidecarLaunch::DevModule { python, cwd });
+    }
+
+    for path in bundled_exe_candidates() {
+        if path.exists() {
+            return Ok(SidecarLaunch::BundledExe { exe: path });
+        }
+    }
+    Err(
+        "bundled sidecar not found (expected rgain_parser[.exe] beside app or under sidecars/)"
+            .into(),
+    )
+}
+
+pub fn ensure_sidecar(state: &SidecarState) -> Result<(), String> {
+    let launch = resolve_launch()?;
+    let launch_key = launch.key();
+
     let mut guard = state.child.lock().map_err(|e| e.to_string())?;
     if let Some(proc) = guard.as_mut() {
-        // Reuse if same interpreter and still alive.
-        if proc.python_path == python_path {
+        if proc.launch_key == launch_key {
             match proc.child.try_wait() {
                 Ok(None) => return Ok(()),
-                Ok(Some(status)) => {
-                    let _ = status;
-                }
-                Err(_) => {}
+                Ok(Some(_)) | Err(_) => {}
             }
         } else {
             let _ = proc.child.kill();
@@ -55,31 +148,12 @@ pub fn ensure_sidecar(
         *guard = None;
     }
 
-    let python_root = resolve_python_root();
-    if !python_root.join("rgain_parser").exists() {
-        return Err(format!(
-            "python package not found under {}",
-            python_root.display()
-        ));
-    }
-
-    let mut child = Command::new(python_path)
-        .arg("-u")
-        .arg("-m")
-        .arg("rgain_parser")
-        .current_dir(&python_root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("spawn python failed: {e} (path={python_path})"))?;
-
+    let mut child = launch.spawn()?;
     let stdin = child.stdin.take().ok_or("missing stdin")?;
     let stdout = child.stdout.take().ok_or("missing stdout")?;
     let mut reader = BufReader::new(stdout);
 
-    // Wait for ready event.
-    let ready = read_line_timeout(&mut reader, Duration::from_secs(5))?;
+    let ready = read_line_timeout(&mut reader, Duration::from_secs(8))?;
     let ready_json: Value =
         serde_json::from_str(&ready).map_err(|e| format!("ready parse: {e}; line={ready}"))?;
     if ready_json.get("event").and_then(|v| v.as_str()) != Some("ready") {
@@ -90,7 +164,7 @@ pub fn ensure_sidecar(
         child,
         stdin,
         reader,
-        python_path: python_path.to_string(),
+        launch_key,
         next_id: 1,
     });
     Ok(())
@@ -100,8 +174,6 @@ fn read_line_timeout(
     reader: &mut BufReader<std::process::ChildStdout>,
     timeout: Duration,
 ) -> Result<String, String> {
-    // Simple blocking read with wall-clock timeout wrapper.
-    // For Phase A this is enough; Phase B can move to async threads.
     let started = Instant::now();
     loop {
         let mut line = String::new();
@@ -121,13 +193,8 @@ fn read_line_timeout(
     }
 }
 
-pub fn request(
-    state: &SidecarState,
-    python_path: &str,
-    cmd: &str,
-    payload: Option<Value>,
-) -> Result<Value, String> {
-    ensure_sidecar(state, python_path)?;
+pub fn request(state: &SidecarState, cmd: &str, payload: Option<Value>) -> Result<Value, String> {
+    ensure_sidecar(state)?;
     let mut guard = state.child.lock().map_err(|e| e.to_string())?;
     let proc = guard.as_mut().ok_or("sidecar not running")?;
 
@@ -145,7 +212,13 @@ pub fn request(
     writeln!(proc.stdin, "{}", msg).map_err(|e| e.to_string())?;
     proc.stdin.flush().map_err(|e| e.to_string())?;
 
-    let line = read_line_timeout(&mut proc.reader, Duration::from_secs(8))?;
+    // extract can be slow on large PDFs
+    let timeout = if cmd == "extract" {
+        Duration::from_secs(120)
+    } else {
+        Duration::from_secs(8)
+    };
+    let line = read_line_timeout(&mut proc.reader, timeout)?;
     let value: Value =
         serde_json::from_str(&line).map_err(|e| format!("response parse: {e}; line={line}"))?;
     Ok(value)
@@ -157,5 +230,12 @@ pub fn shutdown(state: &SidecarState) {
             let _ = proc.child.kill();
             let _ = proc.child.wait();
         }
+    }
+}
+
+pub fn launch_description() -> String {
+    match resolve_launch() {
+        Ok(launch) => launch.key(),
+        Err(err) => format!("unresolved:{err}"),
     }
 }

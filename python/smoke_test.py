@@ -34,6 +34,16 @@ def main() -> None:
     )
     proc.stdin.flush()
     print("echo:", proc.stdout.readline().strip())
+
+    # optional extract self-check if deps present
+    try:
+        import ebooklib  # noqa: F401
+        import pymupdf  # noqa: F401
+    except ImportError as err:
+        print("extract_deps_skip:", err)
+    else:
+        print("extract_deps: ok")
+
     proc.kill()
     proc.wait(timeout=3)
     print("ok")

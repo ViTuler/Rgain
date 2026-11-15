@@ -1,4 +1,4 @@
-"""stdio JSON line protocol for Rgain sidecar (Phase A: health + echo)."""
+"""stdio JSON line protocol for Rgain sidecar."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import sys
 from typing import Any
 
 from . import __version__
+from .extract import extract_file
 
 
 def _write(obj: dict[str, Any]) -> None:
@@ -26,6 +27,7 @@ def _handle(msg: dict[str, Any]) -> dict[str, Any]:
                 "status": "ok",
                 "version": __version__,
                 "env": "vi",
+                "caps": ["extract_pdf", "extract_epub"],
             },
         }
 
@@ -35,6 +37,20 @@ def _handle(msg: dict[str, Any]) -> dict[str, Any]:
             "ok": True,
             "data": msg.get("payload", {}),
         }
+
+    if cmd == "extract":
+        payload = msg.get("payload") or {}
+        path = payload.get("path")
+        if not isinstance(path, str) or not path:
+            return {"id": req_id, "ok": False, "error": "missing_path"}
+        result = extract_file(path)
+        if not result.get("ok"):
+            return {
+                "id": req_id,
+                "ok": False,
+                "error": result.get("error", "extract_failed"),
+            }
+        return {"id": req_id, "ok": True, "data": result}
 
     return {
         "id": req_id,

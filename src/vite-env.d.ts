@@ -5,3 +5,8 @@ declare module "*.vue" {
   const component: DefineComponent<{}, {}, any>;
   export default component;
 }
+
+declare module "cytoscape-elk" {
+  const elk: (cytoscape: unknown) => void;
+  export default elk;
+}

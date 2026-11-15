@@ -2,8 +2,8 @@
 
 > 依据：`tech_selection.md` · `parsing_rust_vs_python.md` · `design_tokens.md`  
 > 栈：**Tauri 2 + Vue3 + TS**；解析侧挂 **Python**；主色 `#75eec5` / `#ff1b1b`  
-> 状态：Phase A 实施中 / 基线代码已落库  
-> Python conda：**`vi`**（A4 仅需 stdlib，暂不装 pip 包）
+> 状态：Phase D 完成 / Phase E 待做  
+> Python conda：**`vi`**（B 需 `pymupdf` / `ebooklib` / `lxml`，见 `python/requirements.txt`）
 
 ---
 
@@ -56,31 +56,35 @@ rgain/
 
 ### Phase B — 解析与喂模
 
-| ID | 任务 | 产出 |
-|----|------|------|
-| B1 | Rust：目录 walk + 纯文本读取（扩展名白名单） | 代码项目可 ingest |
-| B2 | Python：PDF（PyMuPDF）/ EPUB（ebooklib）抽取 | 书籍文本 |
-| B3 | hash 缓存写入 `file_extracts` | 重复解析跳过 |
-| B4 | 内置 agent prompt + JSON schema；Rust/Python 调 LLM 流式 | 结构化图数据 |
-| B5 | schema 校验失败 → 一次修复重试 | 降低坏 JSON |
+| ID | 任务 | 状态 | 产出 |
+|----|------|------|------|
+| B1 | Rust：目录 walk + 纯文本读取（扩展名白名单） | done | `ingest.rs` collect/extract |
+| B2 | Python：PDF（PyMuPDF）/ EPUB（ebooklib）抽取 | done | sidecar `extract` |
+| B3 | hash 缓存写入 `file_extracts` | done | sha256 + SQLite cache |
+| B4 | 内置 agent prompt + LLM chat completions | done | `prompts/` + `llm.rs` |
+| B5 | schema 校验失败 → 一次修复重试 | done | `graph.rs` validate + retry |
+| BUI | LeftPanel 选目录 / 解析 / 历史回放 | done | dialog + `open_project` / `run_ingest` |
 
-### Phase C — 3D 讲解体验
+### Phase C — 讲解舞台（2D + 3D）
 
-| ID | 任务 | 产出 |
-|----|------|------|
-| C1 | TresJS/Three 场景 + 相机控制 | 可旋转缩放 |
-| C2 | Trunk Timeline 布局（`axis_order` + `kind`） | 主干 + 侧向支路 |
-| C3 | 模块色映射（mint 主干 / crimson 强调 / categorical 模块） | 视觉分层 |
-| C4 | 节点点击 → 右侧讲解；Hover 邻边高亮 | 讲解闭环 |
-| C5 | 布局自适应（碰撞避让 / 深度间距） | 节点可读 |
+| ID | 任务 | 状态 | 产出 |
+|----|------|------|------|
+| C1 | TresJS/Three 场景 + 相机控制 | done | `LogicScene` + CameraControls |
+| C2 | Trunk Timeline 布局（`axis_order` + `kind`） | done | `layout_trunk.ts` |
+| C3 | 模块色映射（mint 主干 / crimson 强调 / categorical 模块） | done | trunk mint / branch crimson mix |
+| C4 | 节点点击 → 右侧讲解；Hover 邻边高亮 | done | ExplainPanel + dim neighbors |
+| C5 | 布局自适应（碰撞避让 / 深度间距） | done | pairwise XZ repulsion |
+| C6 | 规范图契约 + Cytoscape/ELK 适配 | done | `types/graph.ts` · `graph_adapters.ts` |
+| C7 | 2D Flow（json-to-graph 风格）+ 2D/3D 切换 | done | `LogicFlow2d` · `LogicStage` |
+| C8 | 2D 节点位置缓存（按 run，SQLite） | done | `graph_layouts` · drag 防抖保存 |
 
 ### Phase D — 划词解释与历史
 
-| ID | 任务 | 产出 |
-|----|------|------|
-| D1 | 可配置全局快捷键（Tauri） | 用户可改 |
-| D2 | 划词 + 上下文 → 解释 API → 浮层；写入 `term_explanations` | 名词解释 |
-| D3 | 历史 runs 列表回放图快照 | 本地缓存可用 |
+| ID | 任务 | 状态 | 产出 |
+|----|------|------|------|
+| D1 | 可配置全局快捷键（Tauri） | done | `global-shortcut` + 设置 `explain_hotkey` |
+| D2 | 划词 + 上下文 → 解释 API → 浮层；写入 `term_explanations` | done | `explain_term` + TermExplainDialog |
+| D3 | 历史 runs 列表回放图快照 | done | 历史高亮 `active_run_id` + `get_run_graph` |
 
 ### Phase E — MCP 余留（二期）
 
@@ -91,19 +95,31 @@ rgain/
 
 ---
 
-## 3. 数据契约（实现时冻结到 `src/types/graph.ts`）
+## 3. 数据契约（冻结：`src/types/graph.ts`）
 
-沿用选型文档 JSON：`meta` / `modules` / `nodes` / `edges` / `terms`。  
-客户端布局只依赖：`axis_order`、`kind`、`module_id`、`parent_id`、`edges`。
+持久化 / LLM 产出：`meta` / `modules` / `groups?` / `nodes` / `edges` / `terms?`。
+
+| 字段 | 作用 |
+|------|------|
+| `axis_order` / `kind` / `parent_id` | 3D Trunk 布局 |
+| `group_id` / `groups` | 2D Cytoscape compound（`data.parent`） |
+| `module_id` + `color_hint` | 两侧着色；无 `group_id` 时 2D 可按模块套盒 |
+
+视图投影（不写库）：
+- 2D → `to_cytoscape_elements` → Cytoscape.js + ELK（`flow-right` 默认）
+- 3D → `layout_trunk_graph`
+
+`meta.default_view` / `meta.default_flow_layout` 为打开偏好，UI 可覆盖。
 
 ---
 
 ## 4. Sidecar 约定（开发期）
 
 - conda 环境：**`vi`**（**禁止在 base 装包**）。  
-- 配置项：`python_path` → `vi` env 的解释器。  
+- 开发：自动 `vi` 解释器 `-m rgain_parser`；产品：自动启动打包的 `rgain_parser` 可执行文件（不再在设置里配 Python 路径）。  
 - 协议 MVP：stdio，一行一个 JSON；字段 `cmd` / `ok` / `data` / `error`。  
-- 退出：Tauri `RunEvent::Exit` 杀子进程。
+- 退出：Tauri `RunEvent::Exit` 杀子进程。  
+- API Key：仅 SQLite 后端持有；`get_settings` 不回传明文，前端展示 `******`。
 
 ---
 
@@ -130,8 +146,9 @@ rgain/
 
 ## 7. 完成定义（MVP Done）
 
-- [ ] 选一个本地代码仓库，一键解析并生成可旋转 3D 逻辑图  
-- [ ] 至少一种 PDF 或 EPUB 可抽取并进同一流水线  
-- [ ] 历史 run 可重新打开  
-- [ ] 主色 mint/crimson 在 UI 与 3D 中一致可辨  
-- [ ] 文档与代码中的包名均为 `rgain` / `com.vialon17.rgain`
+- [x] 选一个本地代码仓库，一键解析并生成可旋转 3D 逻辑图  
+- [x] 至少一种 PDF 或 EPUB 可抽取并进同一流水线  
+- [x] 历史 run 可重新打开  
+- [x] 主色 mint/crimson 在 UI 与 3D 中一致可辨  
+- [x] 文档与代码中的包名均为 `rgain` / `com.vialon17.rgain`  
+- [x] 划词解释快捷键可配置，结果写入本地 `term_explanations`
