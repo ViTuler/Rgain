@@ -1,4 +1,6 @@
+use crate::logutil;
 use serde_json::{json, Value};
+use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -29,36 +31,64 @@ enum SidecarLaunch {
 impl SidecarLaunch {
     fn key(&self) -> String {
         match self {
-            Self::DevModule { python, cwd } => format!("dev:{}|{}", python.display(), cwd.display()),
-            Self::BundledExe { exe } => format!("exe:{}", exe.display()),
+            // utf8v1: force respawn after PYTHONUTF8 stdin fix for Chinese paths
+            Self::DevModule { python, cwd } => {
+                format!("dev:utf8v1:{}|{}", python.display(), cwd.display())
+            }
+            Self::BundledExe { exe } => format!("exe:utf8v1:{}", exe.display()),
         }
     }
 
     fn spawn(&self) -> Result<Child, String> {
+        let stderr = sidecar_stderr_stdio();
         match self {
-            Self::DevModule { python, cwd } => Command::new(python)
-                .arg("-u")
-                .arg("-m")
-                .arg("rgain_parser")
-                .current_dir(cwd)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .map_err(|e| {
+            Self::DevModule { python, cwd } => {
+                let mut cmd = Command::new(python);
+                cmd.arg("-u")
+                    .arg("-m")
+                    .arg("rgain_parser")
+                    .current_dir(cwd)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(stderr);
+                apply_sidecar_env(&mut cmd);
+                cmd.spawn().map_err(|e| {
                     format!(
                         "spawn dev python failed: {e} (python={} cwd={})",
                         python.display(),
                         cwd.display()
                     )
-                }),
-            Self::BundledExe { exe } => Command::new(exe)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .map_err(|e| format!("spawn bundled sidecar failed: {e} (exe={})", exe.display())),
+                })
+            }
+            Self::BundledExe { exe } => {
+                let mut cmd = Command::new(exe);
+                cmd.stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(stderr);
+                apply_sidecar_env(&mut cmd);
+                cmd.spawn()
+                    .map_err(|e| format!("spawn bundled sidecar failed: {e} (exe={})", exe.display()))
+            }
         }
+    }
+}
+
+fn sidecar_stderr_stdio() -> Stdio {
+    if let Some(dir) = logutil::log_dir() {
+        let path = dir.join("sidecar.stderr.log");
+        if let Ok(file) = OpenOptions::new().create(true).append(true).open(path) {
+            return Stdio::from(file);
+        }
+    }
+    Stdio::piped()
+}
+
+fn apply_sidecar_env(cmd: &mut Command) {
+    // Windows system codepage stdin would corrupt UTF-8 Chinese book paths.
+    cmd.env("PYTHONUTF8", "1");
+    cmd.env("PYTHONIOENCODING", "utf-8");
+    if let Some(dir) = logutil::log_dir() {
+        cmd.env("RGAIN_LOG_DIR", dir);
     }
 }
 
@@ -209,19 +239,55 @@ pub fn request(state: &SidecarState, cmd: &str, payload: Option<Value>) -> Resul
         msg["payload"] = payload;
     }
 
+    logutil::info(&format!("sidecar_req id={id} cmd={cmd}"));
     writeln!(proc.stdin, "{}", msg).map_err(|e| e.to_string())?;
     proc.stdin.flush().map_err(|e| e.to_string())?;
 
-    // extract can be slow on large PDFs
+    // extract can be slow on large PDFs / EPUBs / MOBIs
     let timeout = if cmd == "extract" {
-        Duration::from_secs(120)
+        Duration::from_secs(600)
     } else {
         Duration::from_secs(8)
     };
-    let line = read_line_timeout(&mut proc.reader, timeout)?;
-    let value: Value =
-        serde_json::from_str(&line).map_err(|e| format!("response parse: {e}; line={line}"))?;
-    Ok(value)
+    let deadline = Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            logutil::error(&format!("sidecar_timeout id={id} cmd={cmd}"));
+            return Err("sidecar read timeout".into());
+        }
+        let line = read_line_timeout(&mut proc.reader, remaining)?;
+        let value: Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(err) => {
+                // Libraries (e.g. mobi/loguru) may pollute stdout; skip noise.
+                logutil::warn(&format!(
+                    "sidecar_skip_non_json id={id} err={err} line={}",
+                    truncate_for_log(&line, 240)
+                ));
+                continue;
+            }
+        };
+        let resp_id = value.get("id").and_then(|v| v.as_u64());
+        if resp_id == Some(id) {
+            let ok = value.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+            logutil::info(&format!("sidecar_res id={id} cmd={cmd} ok={ok}"));
+            return Ok(value);
+        }
+        logutil::warn(&format!(
+            "sidecar_skip_unmatched id={id} got={:?} line={}",
+            resp_id,
+            truncate_for_log(&line, 240)
+        ));
+    }
+}
+
+fn truncate_for_log(text: &str, max: usize) -> String {
+    let cleaned = text.replace('\n', "\\n");
+    if cleaned.chars().count() <= max {
+        return cleaned;
+    }
+    cleaned.chars().take(max).collect::<String>() + "…"
 }
 
 pub fn shutdown(state: &SidecarState) {

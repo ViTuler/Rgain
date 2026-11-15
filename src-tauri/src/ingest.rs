@@ -1,4 +1,5 @@
 use crate::db;
+use crate::logutil;
 use crate::sidecar::{self, SidecarState};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -28,10 +29,22 @@ const TEXT_EXTS: &[&str] = &[
     "xml", "cmake", "makefile", "mk", "sh", "ps1", "sql", "ini", "cfg", "conf",
 ];
 
-const DOC_EXTS: &[&str] = &["pdf", "epub"];
-const MAX_FILE_BYTES: u64 = 1_500_000;
-const MAX_TOTAL_CHARS: usize = 100_000;
+const DOC_EXTS: &[&str] = &["pdf", "epub", "mobi"];
+/// Soft cap for text/code files while walking a folder.
+const MAX_TEXT_FILE_BYTES: u64 = 1_500_000;
+/// Books (pdf/epub/mobi) may be large; skip only absurd sizes during walk.
+const MAX_DOC_FILE_BYTES: u64 = 200_000_000;
+/// Corpus budget sent to the LLM (large books truncate with a warning).
+const MAX_TOTAL_CHARS: usize = 400_000;
 const MAX_FILES: usize = 120;
+
+pub fn is_supported_book_file(path: &Path) -> bool {
+    path.is_file() && is_doc_ext(&ext_of(path))
+}
+
+pub fn is_supported_project_root(path: &Path) -> bool {
+    path.is_dir() || is_supported_book_file(path)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractedFile {
@@ -89,6 +102,18 @@ fn should_skip_dir(name: &str) -> bool {
 }
 
 pub fn collect_candidate_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+    if root.is_file() {
+        if !is_supported_book_file(root) {
+            return Err(format!(
+                "unsupported_book_file:{}",
+                ext_of(root)
+            ));
+        }
+        return Ok(vec![root.to_path_buf()]);
+    }
+    if !root.is_dir() {
+        return Err("root_path_missing".into());
+    }
     let mut out = Vec::new();
     walk(root, root, &mut out)?;
     out.sort();
@@ -127,7 +152,12 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
             continue;
         }
         let meta = fs::metadata(&path).map_err(|e| e.to_string())?;
-        if meta.len() > MAX_FILE_BYTES {
+        let max_bytes = if is_doc_ext(&ext) {
+            MAX_DOC_FILE_BYTES
+        } else {
+            MAX_TEXT_FILE_BYTES
+        };
+        if meta.len() > max_bytes {
             continue;
         }
         out.push(path);
@@ -139,6 +169,13 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
 }
 
 fn rel_path(root: &Path, path: &Path) -> String {
+    if root.is_file() {
+        return root
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("book")
+            .replace('\\', "/");
+    }
     path.strip_prefix(root)
         .unwrap_or(path)
         .to_string_lossy()
@@ -158,6 +195,7 @@ fn extract_doc_via_sidecar(
     sidecar: &SidecarState,
     path: &Path,
 ) -> Result<(String, Vec<String>), String> {
+    logutil::info(&format!("extract_doc_begin path={}", path.display()));
     let payload = json!({ "path": path.to_string_lossy() });
     let value = sidecar::request(sidecar, "extract", Some(payload))?;
     if value.get("ok").and_then(|v| v.as_bool()) != Some(true) {
@@ -165,6 +203,10 @@ fn extract_doc_via_sidecar(
             .get("error")
             .and_then(|v| v.as_str())
             .unwrap_or("extract_failed");
+        logutil::error(&format!(
+            "extract_doc_fail path={} err={err}",
+            path.display()
+        ));
         return Err(err.to_string());
     }
     let data = value.get("data").cloned().unwrap_or(json!({}));
@@ -182,6 +224,24 @@ fn extract_doc_via_sidecar(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    if text.trim().is_empty() {
+        let detail = if warnings.is_empty() {
+            "extract_empty_text".to_string()
+        } else {
+            format!("extract_empty_text:{}", warnings.join(";"))
+        };
+        logutil::warn(&format!(
+            "extract_doc_empty path={} detail={detail}",
+            path.display()
+        ));
+        return Err(detail);
+    }
+    logutil::info(&format!(
+        "extract_doc_ok path={} chars={} warnings={}",
+        path.display(),
+        text.len(),
+        warnings.len()
+    ));
     Ok((text, warnings))
 }
 
@@ -191,7 +251,15 @@ pub fn extract_project_files(
     project_id: i64,
     root: &Path,
 ) -> Result<(Vec<ExtractedFile>, Vec<String>), String> {
+    logutil::info(&format!(
+        "extract_project_begin project_id={project_id} root={}",
+        root.display()
+    ));
     let files = collect_candidate_files(root)?;
+    logutil::info(&format!(
+        "extract_candidates project_id={project_id} count={}",
+        files.len()
+    ));
     let mut extracted = Vec::new();
     let mut warnings = Vec::new();
     let mut total_chars = 0usize;

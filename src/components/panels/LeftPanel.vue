@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { use_i18n } from "../../i18n";
 import IconButton from "../chrome/IconButton.vue";
 import ViewPane from "./ViewPane.vue";
@@ -11,7 +11,6 @@ const props = defineProps<{
     runs: RunRow[];
     active_run_id: number | null;
     ingest_busy: boolean;
-    ingest_message: string;
     sidecar_status: string;
 }>();
 
@@ -27,6 +26,7 @@ const sidecar_label = computed(() =>
 const emit = defineEmits<{
     open_settings: [];
     pick_folder: [];
+    pick_book: [];
     run_ingest: [];
     open_run: [run_id: number];
     rename_run: [payload: { run_id: number; title: string }];
@@ -38,6 +38,41 @@ const history_open = ref(true);
 const editing_run_id = ref<number | null>(null);
 const edit_draft = ref("");
 const edit_input = ref<HTMLInputElement | null>(null);
+const pending_delete_id = ref<number | null>(null);
+let delete_dismiss_bound = false;
+
+function dismiss_pending_delete(event: Event) {
+    const id = pending_delete_id.value;
+    if (id === null) return;
+    const target = event.target;
+    if (target instanceof Element) {
+        if (target.closest(`[data-delete-confirm="${id}"]`)) return;
+        if (target.closest(`[data-delete-actions="${id}"]`)) return;
+    }
+    pending_delete_id.value = null;
+}
+
+function bind_delete_dismiss() {
+    if (delete_dismiss_bound) return;
+    document.addEventListener("pointerdown", dismiss_pending_delete, true);
+    delete_dismiss_bound = true;
+}
+
+function unbind_delete_dismiss() {
+    if (!delete_dismiss_bound) return;
+    document.removeEventListener("pointerdown", dismiss_pending_delete, true);
+    delete_dismiss_bound = false;
+}
+
+watch(pending_delete_id, (id) => {
+    if (id === null) {
+        unbind_delete_dismiss();
+        return;
+    }
+    bind_delete_dismiss();
+});
+
+onBeforeUnmount(unbind_delete_dismiss);
 
 function run_title(run: RunRow): string {
     const title = run.title?.trim();
@@ -51,6 +86,7 @@ function bind_edit_input(el: unknown) {
 async function start_rename(run: RunRow, event: Event) {
     event.stopPropagation();
     event.preventDefault();
+    pending_delete_id.value = null;
     editing_run_id.value = run.id;
     edit_draft.value = run_title(run);
     await nextTick();
@@ -78,11 +114,28 @@ function commit_rename(run: RunRow) {
 function on_delete(run: RunRow, event: Event) {
     event.stopPropagation();
     event.preventDefault();
+    if (pending_delete_id.value === run.id) {
+        pending_delete_id.value = null;
+        return;
+    }
+    if (editing_run_id.value !== null) {
+        cancel_rename();
+    }
+    pending_delete_id.value = run.id;
+}
+
+function confirm_delete(run: RunRow, event: Event) {
+    event.stopPropagation();
+    event.preventDefault();
+    pending_delete_id.value = null;
     emit("delete_run", run.id);
 }
 
 function on_open(run: RunRow) {
     if (editing_run_id.value === run.id) return;
+    if (pending_delete_id.value !== null) {
+        pending_delete_id.value = null;
+    }
     emit("open_run", run.id);
 }
 </script>
@@ -108,7 +161,19 @@ function on_open(run: RunRow) {
                         @click="emit('pick_folder')">
                         <svg viewBox="0 0 16 16" aria-hidden="true">
                             <path fill="currentColor"
-                                d="M8 2a.5.5 0 0 1 .5.5V7H13a.5.5 0 0 1 0 1H8.5v4.5a.5.5 0 0 1-1 0V8H3a.5.5 0 0 1 0-1h4.5V2.5A.5.5 0 0 1 8 2z" />
+                                d="M1.5 2A1.5 1.5 0 0 0 0 3.5v9A1.5 1.5 0 0 0 1.5 14h13a1.5 1.5 0 0 0 1.5-1.5v-7A1.5 1.5 0 0 0 14.5 4H7.707L6.353 2.646A.5.5 0 0 0 6 2.5H1.5zM1 3.5a.5.5 0 0 1 .5-.5h4.293l1.353 1.354A.5.5 0 0 0 7.5 5h7a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-9z" />
+                            <path fill="currentColor"
+                                d="M11.5 7.5a.5.5 0 0 0-1 0V9H9a.5.5 0 0 0 0 1h1.5v1.5a.5.5 0 0 0 1 0V10H13a.5.5 0 0 0 0-1h-1.5V7.5z" />
+                        </svg>
+                    </button>
+                    <button type="button" class="pane_action" :title="t('explorer.pick_book')"
+                        :aria-label="t('explorer.pick_book')" :disabled="ingest_busy"
+                        @click="emit('pick_book')">
+                        <svg viewBox="0 0 16 16" aria-hidden="true">
+                            <path fill="currentColor"
+                                d="M2.5 1A1.5 1.5 0 0 0 1 2.5v11A1.5 1.5 0 0 0 2.5 15h11a.5.5 0 0 0 .5-.5v-13A1.5 1.5 0 0 0 12.5 0h-10zm0 1h10a.5.5 0 0 1 .5.5V14H2.5a.5.5 0 0 1-.5-.5v-11a.5.5 0 0 1 .5-.5z" />
+                            <path fill="currentColor"
+                                d="M4.5 4.5a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1H5a.5.5 0 0 1-.5-.5zm0 2.5a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1H5a.5.5 0 0 1-.5-.5zm0 2.5a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 0 1H5a.5.5 0 0 1-.5-.5z" />
                         </svg>
                     </button>
                 </template>
@@ -125,8 +190,6 @@ function on_open(run: RunRow) {
                     >
                         {{ ingest_busy ? t("explorer.parsing") : t("explorer.start_parse") }}
                     </button>
-                    <p class="muted">{{ t("explorer.prompt_hint") }}</p>
-                    <p v-if="ingest_message" class="status_msg">{{ ingest_message }}</p>
                 </div>
             </ViewPane>
 
@@ -145,7 +208,11 @@ function on_open(run: RunRow) {
                             v-for="run in runs"
                             :key="run.id"
                             class="run_row"
-                            :class="{ active: active_run_id === run.id, editing: editing_run_id === run.id }"
+                            :class="{
+                                active: active_run_id === run.id,
+                                editing: editing_run_id === run.id,
+                                confirming: pending_delete_id === run.id,
+                            }"
                         >
                             <button
                                 type="button"
@@ -189,18 +256,43 @@ function on_open(run: RunRow) {
                                     <span class="run_time">{{ run.created_at }}</span>
                                 </div>
                             </button>
-                            <button
-                                type="button"
-                                class="run_icon run_delete"
-                                :title="t('explorer.delete_run')"
-                                :aria-label="t('explorer.delete_run')"
-                                @click="on_delete(run, $event)"
+                            <div
+                                class="run_delete_actions"
+                                :class="{ confirming: pending_delete_id === run.id }"
+                                :data-delete-actions="run.id"
                             >
-                                <svg viewBox="0 0 16 16" aria-hidden="true">
-                                    <path fill="currentColor"
-                                        d="M6.5 1a.5.5 0 0 0-.5.5V2H2.5a.5.5 0 0 0 0 1h.563l.703 9.146A1.5 1.5 0 0 0 5.26 13.5h5.48a1.5 1.5 0 0 0 1.494-1.354L13 3h.5a.5.5 0 0 0 0-1H10v-.5a.5.5 0 0 0-.5-.5h-3zM7 2h2v.5H7V2zm1 3.5a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm-2.5.5a.5.5 0 0 1 1 0v6a.5.5 0 0 1-1 0V6zm5 0a.5.5 0 0 1 1 0v6a.5.5 0 0 1-1 0V6z" />
-                                </svg>
-                            </button>
+                                <button
+                                    type="button"
+                                    class="run_icon run_delete_confirm"
+                                    :data-delete-confirm="run.id"
+                                    :title="t('explorer.confirm_delete')"
+                                    :aria-label="t('explorer.confirm_delete')"
+                                    :tabindex="pending_delete_id === run.id ? 0 : -1"
+                                    @click="confirm_delete(run, $event)"
+                                >
+                                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                                        <path fill="currentColor"
+                                            d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z" />
+                                    </svg>
+                                </button>
+                                <button
+                                    type="button"
+                                    class="run_icon run_delete"
+                                    :class="{ as_cancel: pending_delete_id === run.id }"
+                                    :title="pending_delete_id === run.id ? t('common.cancel') : t('explorer.delete_run')"
+                                    :aria-label="pending_delete_id === run.id ? t('common.cancel') : t('explorer.delete_run')"
+                                    @click="on_delete(run, $event)"
+                                >
+                                    <svg v-if="pending_delete_id === run.id" viewBox="0 0 16 16" aria-hidden="true">
+                                        <path fill="currentColor"
+                                            d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z" />
+                                    </svg>
+                                    <svg v-else viewBox="0 0 16 16" aria-hidden="true">
+                                        <path fill="currentColor"
+                                            d="M6.5 1a.5.5 0 0 0-.5.5V2H2.5a.5.5 0 0 0 0 1h.563l.703 9.146A1.5 1.5 0 0 0 5.26 13.5h5.48a1.5 1.5 0 0 0 1.494-1.354L13 3h.5a.5.5 0 0 0 0-1H10v-.5a.5.5 0 0 0-.5-.5h-3zM7 2h2v.5H7V2zm1 3.5a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm-2.5.5a.5.5 0 0 1 1 0v6a.5.5 0 0 1-1 0V6zm5 0a.5.5 0 0 1 1 0v6a.5.5 0 0 1-1 0V6z" />
+                                    </svg>
+                                </button>
+                            </div>
                         </li>
                     </ul>
                     <ul v-else class="empty_list">
@@ -316,14 +408,6 @@ function on_open(run: RunRow) {
     cursor: not-allowed;
 }
 
-.status_msg {
-    margin: 0;
-    color: var(--color_accent_deep);
-    font-size: 0.72rem;
-    white-space: pre-wrap;
-    word-break: break-word;
-}
-
 .run_list {
     margin: 0;
     padding: 0;
@@ -354,9 +438,14 @@ function on_open(run: RunRow) {
 }
 
 .run_row:hover .run_item,
-.run_row.editing .run_item {
+.run_row.editing .run_item,
+.run_row.confirming .run_item {
     border-color: var(--color_line);
     background: var(--color_surface_2);
+}
+
+.run_row.confirming .run_item {
+    padding-right: 2.85rem;
 }
 
 .run_row.active .run_item {
@@ -440,8 +529,9 @@ function on_open(run: RunRow) {
     transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
 }
 
-.run_row:hover .run_icon,
-.run_row.editing .run_icon,
+.run_row:hover .run_icon:not(.run_delete_confirm),
+.run_row.editing .run_icon:not(.run_delete_confirm),
+.run_row.confirming .run_delete,
 .run_icon:focus-visible {
     opacity: 1;
     pointer-events: auto;
@@ -457,17 +547,57 @@ function on_open(run: RunRow) {
     height: 13px;
 }
 
-.run_delete {
+.run_delete_actions {
     position: absolute;
     top: 50%;
     right: 0.28rem;
-    transform: translateY(-50%);
     z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 0.12rem;
+    transform: translateY(-50%);
 }
 
-.run_delete:hover {
+.run_delete_confirm {
+    width: 0;
+    min-width: 0;
+    overflow: hidden;
+    opacity: 0;
+    transform: translateX(8px);
+    pointer-events: none;
+    color: var(--color_accent_deep);
+    transition:
+        width 0.18s ease,
+        min-width 0.18s ease,
+        opacity 0.16s ease,
+        transform 0.18s ease,
+        color 0.12s ease,
+        background 0.12s ease;
+}
+
+.run_delete_actions.confirming .run_delete_confirm {
+    width: 20px;
+    min-width: 20px;
+    opacity: 1;
+    transform: translateX(0);
+    pointer-events: auto;
+}
+
+.run_delete_confirm:hover {
+    color: var(--color_accent_deep);
+    background: color-mix(in srgb, var(--color_accent) 18%, transparent);
+}
+
+.run_delete:hover,
+.run_delete.as_cancel:hover {
     color: var(--color_brand);
     background: color-mix(in srgb, var(--color_brand) 14%, transparent);
+}
+
+.run_delete.as_cancel {
+    opacity: 1;
+    pointer-events: auto;
+    color: var(--color_brand);
 }
 
 .pane_action {

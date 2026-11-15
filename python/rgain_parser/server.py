@@ -27,7 +27,7 @@ def _handle(msg: dict[str, Any]) -> dict[str, Any]:
                 "status": "ok",
                 "version": __version__,
                 "env": "vi",
-                "caps": ["extract_pdf", "extract_epub"],
+                "caps": ["extract_pdf", "extract_epub", "extract_mobi"],
             },
         }
 
@@ -60,6 +60,13 @@ def _handle(msg: dict[str, Any]) -> dict[str, Any]:
 
 
 def run() -> None:
+    # Force UTF-8 on stdio so Chinese/Unicode book paths survive Windows pipes.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
     _write(
         {
             "ok": True,
@@ -68,8 +75,9 @@ def run() -> None:
         }
     )
 
-    for line in sys.stdin:
-        text = line.strip()
+    # Read bytes and decode as UTF-8; avoids cp936 stdin mangling paths from Rust.
+    for raw in sys.stdin.buffer:
+        text = raw.decode("utf-8", errors="replace").strip()
         if not text:
             continue
         try:

@@ -15,6 +15,7 @@ const props = defineProps<{
     message: string;
     sidecar_message: string;
     llm_message: string;
+    llm_ok: boolean | null;
 }>();
 
 const emit = defineEmits<{
@@ -132,6 +133,16 @@ function on_api_key_blur() {
                 <section class="group">
                     <div class="group_head">
                         <h2>{{ t("settings.llm") }}</h2>
+                        <span
+                            v-if="llm_message"
+                            class="llm_badge"
+                            :data-ok="llm_ok === true ? '1' : '0'"
+                            :title="llm_message"
+                            :aria-label="llm_message"
+                        >
+                            <span class="llm_dot" aria-hidden="true" />
+                            <span class="llm_text">{{ llm_message }}</span>
+                        </span>
                         <button
                             type="button"
                             class="btn_inline"
@@ -167,7 +178,6 @@ function on_api_key_blur() {
                         Model
                         <input v-model="draft.model" @input="on_input" />
                     </label>
-                    <p v-if="llm_message" class="msg llm">{{ llm_message }}</p>
                     <label class="prompt_label">
                         <span class="prompt_head">
                             {{ t("settings.agent_prompt") }}
@@ -218,14 +228,14 @@ function on_api_key_blur() {
             </div>
 
             <div class="actions">
-                <button
+                <!-- <button
                     type="button"
                     class="btn_ghost"
                     :disabled="busy"
                     @click="emit('test_sidecar')"
                 >
                     {{ t("settings.test_sidecar") }}
-                </button>
+                </button> -->
                 <button
                     type="button"
                     class="btn_accent"
@@ -304,8 +314,11 @@ h1 {
 .group_head {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 0.5rem;
+}
+
+.group_head .btn_inline {
+    margin-left: auto;
 }
 
 .group h2 {
@@ -485,10 +498,50 @@ select:focus {
     color: var(--color_accent_deep);
 }
 
-.msg.llm,
 .msg.sidecar {
     color: var(--color_body);
     white-space: pre-wrap;
     word-break: break-word;
+}
+
+.llm_badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    min-width: 0;
+    max-width: min(14rem, 42%);
+    padding: 0.18rem 0.55rem 0.18rem 0.4rem;
+    border: 1px solid var(--color_line);
+    border-radius: 999px;
+    background: var(--color_surface_2);
+    color: var(--color_muted);
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    user-select: none;
+}
+
+.llm_dot {
+    width: 7px;
+    height: 7px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: #c44b4b;
+    box-shadow: 0 0 0 2px color-mix(in srgb, #c44b4b 22%, transparent);
+}
+
+.llm_badge[data-ok="1"] .llm_dot {
+    background: #2f9e6b;
+    box-shadow: 0 0 0 2px color-mix(in srgb, #2f9e6b 22%, transparent);
+}
+
+.llm_badge[data-ok="1"] {
+    color: var(--color_ink);
+}
+
+.llm_text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 </style>

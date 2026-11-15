@@ -3,9 +3,10 @@
 #   pip install -r python/requirements.txt
 #
 # Phase A health/echo works with stdlib alone.
-# Phase B PDF/EPUB extract:
+# Phase B PDF/EPUB/MOBI extract:
 pymupdf>=1.24.0
 ebooklib>=0.18
+mobi>=0.4.0
 lxml>=5.0.0
 # optional nicer HTML cleanup for EPUB:
 beautifulsoup4>=4.12.0

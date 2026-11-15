@@ -11,6 +11,7 @@ import ThemeSwitch from "./components/chrome/ThemeSwitch.vue";
 import IconButton from "./components/chrome/IconButton.vue";
 import WindowControls from "./components/chrome/WindowControls.vue";
 import SelectionExplainFab from "./components/chrome/SelectionExplainFab.vue";
+import StatusToast from "./components/chrome/StatusToast.vue";
 import { use_explain_hotkey } from "./composables/use_explain_hotkey";
 import { use_settings } from "./composables/use_settings";
 import { use_theme } from "./composables/use_theme";
@@ -37,13 +38,16 @@ const settings_message = ref("");
 const sidecar_status = ref("未检测");
 const sidecar_message = ref("");
 const llm_message = ref("");
+const llm_ok = ref<boolean | null>(null);
 const draft_settings = ref<AppSettings | null>(null);
 
 const project = ref<ProjectRow | null>(null);
 const runs = ref<RunRow[]>([]);
 const active_run_id = ref<number | null>(null);
 const ingest_busy = ref(false);
-const ingest_message = ref("");
+const toast_message = ref("");
+const toast_tone = ref<"info" | "ok" | "error">("info");
+let toast_timer: ReturnType<typeof setTimeout> | null = null;
 const current_graph = ref<GraphPayload | null>(null);
 const selected_label = ref("");
 const selected_node = ref<GraphNode | null>(null);
@@ -74,6 +78,30 @@ const project_path = computed(() => project.value?.root_path || "");
 use_explain_hotkey(explain_hotkey, () => {
     void trigger_term_explain();
 });
+
+function clear_toast_timer() {
+    if (toast_timer) {
+        clearTimeout(toast_timer);
+        toast_timer = null;
+    }
+}
+
+function show_toast(message: string, tone: "info" | "ok" | "error" = "info", hold_ms = 8000) {
+    toast_message.value = message;
+    toast_tone.value = tone;
+    clear_toast_timer();
+    if (hold_ms > 0) {
+        toast_timer = setTimeout(() => {
+            toast_message.value = "";
+            toast_timer = null;
+        }, hold_ms);
+    }
+}
+
+function dismiss_toast() {
+    clear_toast_timer();
+    toast_message.value = "";
+}
 
 function read_selection_text(): string {
     return window.getSelection()?.toString().trim().slice(0, 200) || "";
@@ -127,6 +155,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+    clear_toast_timer();
     document.removeEventListener("mouseup", on_selection_mouse_up);
     document.removeEventListener("keyup", refresh_selection_term);
     window.removeEventListener("scroll", on_selection_scroll_or_resize, true);
@@ -155,6 +184,7 @@ function open_settings() {
     settings_message.value = "";
     sidecar_message.value = "";
     llm_message.value = "";
+    llm_ok.value = null;
     show_settings.value = true;
 }
 
@@ -205,6 +235,7 @@ async function on_test_llm() {
     if (!draft_settings.value) return;
     busy.value = true;
     llm_message.value = "";
+    llm_ok.value = null;
     try {
         const result = await invoke<{ ok: boolean; detail: string }>("test_llm", {
             args: {
@@ -213,14 +244,30 @@ async function on_test_llm() {
                 api_key: draft_settings.value.api_key,
             },
         });
+        llm_ok.value = result.ok;
         llm_message.value = result.ok
             ? result.detail
             : t("settings.llm_failed", { detail: result.detail });
     } catch (err) {
+        llm_ok.value = false;
         llm_message.value = String(err);
     } finally {
         busy.value = false;
     }
+}
+
+const BOOK_EXTENSIONS = ["pdf", "epub", "mobi"] as const;
+
+async function open_picked_path(selected: string, kind: "code" | "book") {
+    const row = await invoke<ProjectRow>("open_project", {
+        args: { root_path: selected, kind },
+    });
+    project.value = row;
+    show_toast(t("messages.opened", { path: row.root_path }), "ok");
+    current_graph.value = null;
+    selected_label.value = "";
+    selected_node.value = null;
+    active_run_id.value = null;
 }
 
 async function on_pick_folder() {
@@ -231,17 +278,29 @@ async function on_pick_folder() {
             title: t("messages.pick_folder_title"),
         });
         if (!selected || Array.isArray(selected)) return;
-        const row = await invoke<ProjectRow>("open_project", {
-            args: { root_path: selected, kind: "code" },
-        });
-        project.value = row;
-        ingest_message.value = t("messages.opened", { path: row.root_path });
-        current_graph.value = null;
-        selected_label.value = "";
-        selected_node.value = null;
-        active_run_id.value = null;
+        await open_picked_path(selected, "code");
     } catch (err) {
-        ingest_message.value = t("messages.open_failed", { error: String(err) });
+        show_toast(t("messages.open_failed", { error: String(err) }), "error", 12000);
+    }
+}
+
+async function on_pick_book() {
+    try {
+        const selected = await open({
+            directory: false,
+            multiple: false,
+            title: t("messages.pick_book_title"),
+            filters: [
+                {
+                    name: "Books (PDF / EPUB / MOBI)",
+                    extensions: [...BOOK_EXTENSIONS],
+                },
+            ],
+        });
+        if (!selected || Array.isArray(selected)) return;
+        await open_picked_path(selected, "book");
+    } catch (err) {
+        show_toast(t("messages.open_failed", { error: String(err) }), "error", 12000);
     }
 }
 
@@ -259,11 +318,11 @@ function on_reset_prompt() {
 
 async function on_run_ingest() {
     if (!project.value) {
-        ingest_message.value = t("messages.need_folder");
+        show_toast(t("messages.need_source"), "error");
         return;
     }
     ingest_busy.value = true;
-    ingest_message.value = t("messages.ingesting");
+    show_toast(t("messages.ingesting"), "info", 0);
     try {
         const result = await invoke<IngestResult>("run_ingest", {
             args: {
@@ -278,23 +337,34 @@ async function on_run_ingest() {
             selected_node.value = null;
             show_explain.value = true;
             const warn = result.warnings.length ? ` · warnings ${result.warnings.length}` : "";
-            ingest_message.value = t("messages.ingest_ok", {
-                id: result.run_id,
-                files: result.files_processed,
-                cached: result.files_cached,
-                warn,
-            });
+            show_toast(
+                t("messages.ingest_ok", {
+                    id: result.run_id,
+                    files: result.files_processed,
+                    cached: result.files_cached,
+                    warn,
+                }),
+                "ok",
+            );
         } else {
             current_graph.value = null;
             selected_node.value = null;
-            const detail = result.error || result.warnings.join("; ") || "unknown";
-            ingest_message.value = t("messages.ingest_fail", {
-                id: result.run_id,
-                detail,
-            });
+            // error already embeds warnings when set by backend; avoid duplicating.
+            const detail =
+                result.error ||
+                (result.warnings.length ? result.warnings.join("; ") : "") ||
+                "unknown";
+            show_toast(
+                t("messages.ingest_fail", {
+                    id: result.run_id,
+                    detail,
+                }),
+                "error",
+                16000,
+            );
         }
     } catch (err) {
-        ingest_message.value = t("messages.ingest_error", { error: String(err) });
+        show_toast(t("messages.ingest_error", { error: String(err) }), "error", 16000);
     } finally {
         ingest_busy.value = false;
     }
@@ -306,7 +376,7 @@ async function on_open_run(run_id: number) {
             runId: run_id,
         });
         if (!graph) {
-            ingest_message.value = t("messages.no_graph", { id: run_id });
+            show_toast(t("messages.no_graph", { id: run_id }), "error");
             return;
         }
         current_graph.value = graph;
@@ -314,9 +384,9 @@ async function on_open_run(run_id: number) {
         selected_label.value = graph.meta?.title || `run #${run_id}`;
         selected_node.value = null;
         show_explain.value = true;
-        ingest_message.value = t("messages.loaded_run", { id: run_id });
+        show_toast(t("messages.loaded_run", { id: run_id }), "ok");
     } catch (err) {
-        ingest_message.value = t("messages.load_failed", { error: String(err) });
+        show_toast(t("messages.load_failed", { error: String(err) }), "error");
     }
 }
 
@@ -341,17 +411,13 @@ async function on_rename_run(payload: { run_id: number; title: string }) {
                 };
             }
         }
-        ingest_message.value = t("messages.renamed", { id: payload.run_id });
+        show_toast(t("messages.renamed", { id: payload.run_id }), "ok");
     } catch (err) {
-        ingest_message.value = t("messages.rename_failed", { error: String(err) });
+        show_toast(t("messages.rename_failed", { error: String(err) }), "error");
     }
 }
 
 async function on_delete_run(run_id: number) {
-    const run = runs.value.find((r) => r.id === run_id);
-    const label = run?.title?.trim() || `Run #${run_id}`;
-    const ok = window.confirm(t("explorer.delete_confirm", { title: label }));
-    if (!ok) return;
     try {
         await invoke("delete_run", {
             args: { run_id },
@@ -363,9 +429,9 @@ async function on_delete_run(run_id: number) {
             selected_label.value = "";
         }
         await refresh_runs();
-        ingest_message.value = t("messages.deleted", { id: run_id });
+        show_toast(t("messages.deleted", { id: run_id }), "ok");
     } catch (err) {
-        ingest_message.value = t("messages.delete_failed", { error: String(err) });
+        show_toast(t("messages.delete_failed", { error: String(err) }), "error");
     }
 }
 
@@ -493,10 +559,10 @@ function on_selection_fab_explain() {
                     :runs="runs"
                     :active_run_id="active_run_id"
                     :ingest_busy="ingest_busy"
-                    :ingest_message="ingest_message"
                     :sidecar_status="sidecar_status"
                     @open_settings="open_settings"
                     @pick_folder="on_pick_folder"
+                    @pick_book="on_pick_book"
                     @run_ingest="on_run_ingest"
                     @open_run="on_open_run"
                     @rename_run="on_rename_run"
@@ -515,6 +581,13 @@ function on_selection_fab_explain() {
                 :selected_node="selected_node"
                 :graph_title="graph_title"
             />
+
+            <StatusToast
+                v-if="toast_message"
+                :message="toast_message"
+                :tone="toast_tone"
+                @close="dismiss_toast"
+            />
         </div>
 
         <SettingsPanel
@@ -524,6 +597,7 @@ function on_selection_fab_explain() {
             :message="settings_message"
             :sidecar_message="sidecar_message"
             :llm_message="llm_message"
+            :llm_ok="llm_ok"
             @save="on_save_settings"
             @test_sidecar="on_test_sidecar"
             @test_llm="on_test_llm"
@@ -595,15 +669,6 @@ function on_selection_fab_explain() {
     display: flex;
     align-items: center;
     gap: 0.2rem;
-}
-
-/* Explain-sidebar toggle: dark + pressed — light icon for titlebar contrast. */
-:global(html[data-theme="dark"]) .top_actions :deep(.explain_toggle.pressed) {
-    color: #e4e4e4;
-}
-
-:global(html[data-theme="dark"]) .top_actions :deep(.explain_toggle.pressed:hover) {
-    color: #e4e4e4;
 }
 
 .shell_body {

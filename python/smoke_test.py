@@ -38,6 +38,7 @@ def main() -> None:
     # optional extract self-check if deps present
     try:
         import ebooklib  # noqa: F401
+        import mobi  # noqa: F401
         import pymupdf  # noqa: F401
     except ImportError as err:
         print("extract_deps_skip:", err)

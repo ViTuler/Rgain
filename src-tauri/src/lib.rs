@@ -3,6 +3,7 @@ mod dev_port;
 mod graph;
 mod ingest;
 mod llm;
+mod logutil;
 mod sidecar;
 
 use db::{DbState, ProjectRow, PublicSettings, RunRow, TermExplanationRow};
@@ -261,12 +262,19 @@ fn sidecar_echo(
 #[tauri::command]
 fn open_project(db: State<'_, DbState>, args: OpenProjectArgs) -> Result<ProjectRow, String> {
     let root = PathBuf::from(&args.root_path);
-    if !root.is_dir() {
-        return Err("root_path_not_directory".into());
+    if !ingest::is_supported_project_root(&root) {
+        return Err("root_path_invalid_need_folder_or_book".into());
     }
-    let kind = args.kind.unwrap_or_else(|| "code".into());
+    let kind = args.kind.unwrap_or_else(|| {
+        if root.is_file() {
+            "book".into()
+        } else {
+            "code".into()
+        }
+    });
     let title = root
-        .file_name()
+        .file_stem()
+        .or_else(|| root.file_name())
         .and_then(|s| s.to_str())
         .unwrap_or("project")
         .to_string();
@@ -280,15 +288,27 @@ fn run_ingest_sync(
     sidecar: &SidecarState,
     args: RunIngestArgs,
 ) -> Result<IngestResult, String> {
+    logutil::info(&format!("ingest_begin project_id={}", args.project_id));
     let (settings, project, run_id, root) = {
         let conn = db.conn.lock().map_err(|e| e.to_string())?;
         let settings = db::get_settings(&conn)?;
         let project = db::get_project(&conn, args.project_id)?;
         let root = PathBuf::from(&project.root_path);
-        if !root.is_dir() {
+        if !ingest::is_supported_project_root(&root) {
+            logutil::error(&format!(
+                "ingest_bad_root project_id={} path={}",
+                args.project_id,
+                root.display()
+            ));
             return Err("project_root_missing".into());
         }
         let run_id = db::create_run(&conn, project.id, "global_agent_prompt", &settings.model)?;
+        logutil::info(&format!(
+            "ingest_run_created run_id={run_id} project_id={} kind={} root={}",
+            project.id,
+            project.kind,
+            root.display()
+        ));
         (settings, project, run_id, root)
     };
 
@@ -318,6 +338,17 @@ fn run_ingest_sync(
     let cached = files.iter().filter(|f| f.cached).count();
     let corpus = ingest::build_corpus(&files);
     if corpus.trim().is_empty() {
+        let detail = if warnings.is_empty() {
+            "no_extractable_content".to_string()
+        } else {
+            format!("no_extractable_content · {}", warnings.join("; "))
+        };
+        logutil::error(&format!(
+            "ingest_empty run_id={run_id} project_id={} files={} cached={} detail={detail}",
+            project.id,
+            files.len(),
+            cached
+        ));
         let conn = db.conn.lock().map_err(|e| e.to_string())?;
         let _ = db::set_run_title(&conn, run_id, &format!("Empty #{run_id}"));
         let _ = db::finish_run(&conn, run_id, "failed");
@@ -328,7 +359,7 @@ fn run_ingest_sync(
             files_processed: files.len(),
             files_cached: cached,
             graph: None,
-            error: Some("no_extractable_content".into()),
+            error: Some(detail),
             warnings,
         });
     }
@@ -424,6 +455,8 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .map_err(|e| format!("app_data_dir: {e}"))?;
+            let _ = logutil::init(&app_data);
+            logutil::info(&format!("app_start data_dir={}", app_data.display()));
             let conn = db::open_db(&db::db_path(&app_data))?;
             if let Ok(port) = dev_port::read_dev_port_file() {
                 let _ = db::upsert_setting(&conn, "dev_port", &port.to_string());

@@ -1,4 +1,4 @@
-You are Rgain's structure agent. Read the provided project/book extracts and return ONE JSON object only (no markdown fences, no commentary).
+You are Rgain's structure agent. Read the provided program project or book extracts and return ONE JSON object only (no markdown fences, no commentary).
 
 Schema:
 {
