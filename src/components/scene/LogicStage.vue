@@ -12,7 +12,6 @@ import { demo_graph } from "../../lib/layout_trunk";
 import { use_i18n } from "../../i18n";
 import GraphHudTitle from "./GraphHudTitle.vue";
 import LogicFlow2d from "./LogicFlow2d.vue";
-import LogicScene from "./LogicScene.vue";
 
 const props = defineProps<{
     graph: GraphPayload | null;
@@ -38,9 +37,8 @@ const tag_match_ids = computed(() => {
 const is_demo = computed(() => !props.graph);
 const has_run = computed(() => props.run_id != null);
 
-const view_mode = ref<LogicViewMode>(
-    source.value.meta.default_view ?? "2d",
-);
+// 3D trunk view archived under src/archive/scene3d until Tres/Three deps return.
+const view_mode = ref<LogicViewMode>("2d");
 const flow_layout = ref<Flow2dLayoutPreset>(
     source.value.meta.default_flow_layout ?? "flow-right",
 );
@@ -59,7 +57,7 @@ watch(
     () => props.graph,
     (g) => {
         selected_id.value = props.focus_node_id ?? null;
-        if (g?.meta.default_view) view_mode.value = g.meta.default_view;
+        view_mode.value = "2d";
         if (g?.meta.default_flow_layout) {
             flow_layout.value = g.meta.default_flow_layout;
         }
@@ -79,6 +77,7 @@ function on_select(node: GraphNode) {
 }
 
 function set_mode(mode: LogicViewMode) {
+    if (mode !== "2d") return;
     view_mode.value = mode;
 }
 
@@ -138,13 +137,11 @@ async function on_reset_layout() {
         </div>
 
         <div class="stage_body">
-            <LogicFlow2d v-if="view_mode === '2d'" ref="flow2d_ref" :graph="graph" :run_id="run_id ?? null"
+            <LogicFlow2d ref="flow2d_ref" :graph="graph" :run_id="run_id ?? null"
                 :layout_preset="flow_layout" :selected_id="selected_id" :tag_match_ids="tag_match_ids"
                 @select_node="on_select" />
-            <LogicScene v-else :graph="graph" :tag_match_ids="tag_match_ids" :selected_id="selected_id"
-                @select_node="on_select" />
 
-            <div v-if="view_mode === '2d'" class="hud_2d">
+            <div class="hud_2d">
                 <GraphHudTitle tone="light" :title="source.meta.title" :summary="source.meta.summary" />
             </div>
         </div>

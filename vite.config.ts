@@ -1,6 +1,5 @@
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
-import templateCompilerOptions from "@tresjs/core/template-compiler-options";
 // @ts-expect-error type error without @types/node package
 import process from "node:process";
 // @ts-expect-error type error without @types/node package
@@ -40,12 +39,7 @@ const dev_port = read_dev_port();
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
-  plugins: [
-    vue({
-      // TresJS custom elements (TresMesh, …)
-      ...templateCompilerOptions,
-    }),
-  ],
+  plugins: [vue()],
 
   clearScreen: false,
   server: {

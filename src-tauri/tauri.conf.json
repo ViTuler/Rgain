@@ -16,7 +16,7 @@
     ]
   },
   "build": {
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run build:native && npm run build:sidecar && npm run build",
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:20015",
     "frontendDist": "../dist"
@@ -30,9 +30,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "targets": "all"
+    "resources": {
+      "sidecars/rgain_parser.exe": "sidecars/rgain_parser.exe",
+      "native/libcrypto-3-x64.dll": "libcrypto-3-x64.dll"
+    },
+    "targets": ["nsis", "msi"]
   },
-  "identifier": "com.vialon17.rgain",
+  "identifier": "com.ViTuler.Rgain",
   "productName": "Rgain",
   "version": "0.1.0"
 }

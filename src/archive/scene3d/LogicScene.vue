@@ -8,7 +8,7 @@ import {
     layout_trunk_graph,
     type LaidOutNode,
 } from "../../lib/layout_trunk";
-import GraphHudTitle from "./GraphHudTitle.vue";
+import GraphHudTitle from "../../components/scene/GraphHudTitle.vue";
 import GraphNodeMesh from "./GraphNodeMesh.vue";
 import GraphEdgeLine from "./GraphEdgeLine.vue";
 

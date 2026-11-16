@@ -31,6 +31,8 @@ pub struct AppSettings {
     pub chunk_size_mb: f64,
     /// Ask the model to run a thinking / reasoning pass when the API supports it.
     pub think_enabled: bool,
+    /// Directory names or relative paths skipped while scanning a project folder.
+    pub ignore_paths: Vec<String>,
     pub mcp_enabled: bool,
     pub mcp_server_url: String,
 }
@@ -61,6 +63,8 @@ pub struct PublicSettings {
     pub chunk_size_mb: f64,
     #[serde(default = "default_true")]
     pub think_enabled: bool,
+    #[serde(default = "default_ignore_paths")]
+    pub ignore_paths: Vec<String>,
     pub mcp_enabled: bool,
     pub mcp_server_url: String,
 }
@@ -90,6 +94,78 @@ fn default_term_font_px() -> u16 {
 
 fn default_graph_font_px() -> u16 {
     12
+}
+
+pub fn default_ignore_paths() -> Vec<String> {
+    [
+        "node_modules",
+        "dist",
+        "dist-ssr",
+        "build",
+        "out",
+        "target",
+        ".git",
+        ".svn",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".tox",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".cache",
+        ".parcel-cache",
+        ".turbo",
+        ".next",
+        ".nuxt",
+        ".output",
+        "coverage",
+        "htmlcov",
+        ".nyc_output",
+        "vendor",
+        "bower_components",
+        ".gradle",
+        ".dart_tool",
+        "bin",
+        "obj",
+        ".idea",
+        ".vscode",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+pub fn normalize_ignore_path(raw: &str) -> String {
+    let mut text = raw.trim().replace('\\', "/");
+    while let Some(rest) = text.strip_prefix("./") {
+        text = rest.to_string();
+    }
+    text = text.trim_matches('/').to_string();
+    if text.is_empty() || text == "." || text == ".." || text.split('/').any(|part| part == "..") {
+        return String::new();
+    }
+    if text.len() > 120 || text.chars().nth(1) == Some(':') {
+        return String::new();
+    }
+    text
+}
+
+pub fn normalize_ignore_paths(paths: Vec<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for raw in paths {
+        let path = normalize_ignore_path(&raw);
+        let key = path.to_ascii_lowercase();
+        if path.is_empty() || !seen.insert(key) {
+            continue;
+        }
+        out.push(path);
+        if out.len() >= 64 {
+            break;
+        }
+    }
+    out
 }
 
 pub fn clamp_font_px(value: u16, fallback: u16) -> u16 {
@@ -133,6 +209,7 @@ impl Default for AppSettings {
             graph_font_px: default_graph_font_px(),
             chunk_size_mb: default_chunk_size_mb(),
             think_enabled: true,
+            ignore_paths: default_ignore_paths(),
             mcp_enabled: false,
             mcp_server_url: String::new(),
         }
@@ -202,21 +279,342 @@ impl AppSettings {
             graph_font_px: clamp_font_px(self.graph_font_px, default_graph_font_px()),
             chunk_size_mb: clamp_chunk_size_mb(self.chunk_size_mb),
             think_enabled: self.think_enabled,
+            ignore_paths: normalize_ignore_paths(self.ignore_paths.clone()),
             mcp_enabled: self.mcp_enabled,
             mcp_server_url: self.mcp_server_url.clone(),
         }
     }
 }
 
+/// Fixed SQLCipher passphrase for debug / `tauri dev`.
+/// Release builds only use this to migrate older DBs, then rekey to a random keyring secret.
+const LEGACY_SQLITE_KEY: &str = "#sqPX)4XvaaLBd";
+
+/// Must match `tauri.conf.json` → `identifier` (app data + credential scope).
+const KEYRING_SERVICE: &str = "com.ViTuler.Rgain";
+const KEYRING_USER: &str = "sqlcipher-db-key";
+
 pub fn db_path(app_data_dir: &Path) -> PathBuf {
-    app_data_dir.join("rgain.sqlite3")
+    app_data_dir.join("Rgain.sqlite3")
+}
+
+fn db_is_readable(conn: &Connection) -> bool {
+    conn.query_row("SELECT count(*) FROM sqlite_master", [], |row| {
+        row.get::<_, i64>(0)
+    })
+    .is_ok()
+}
+
+fn apply_cipher_key(conn: &Connection, key: &str) -> Result<(), String> {
+    conn.pragma_update(None, "key", key)
+        .map_err(|e| format!("sqlcipher key: {e}"))
+}
+
+fn rekey_cipher(conn: &Connection, key: &str) -> Result<(), String> {
+    conn.pragma_update(None, "rekey", key)
+        .map_err(|e| format!("sqlcipher rekey: {e}"))?;
+    if !db_is_readable(conn) {
+        return Err("sqlcipher: rekey succeeded but database is not readable".into());
+    }
+    Ok(())
+}
+
+fn sql_quote_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn remove_sqlite_sidecars(path: &Path) {
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let mut p = path.as_os_str().to_os_string();
+        p.push(suffix);
+        let _ = std::fs::remove_file(PathBuf::from(p));
+    }
+}
+
+/// Plaintext → SQLCipher: `PRAGMA rekey` is not allowed; use ATTACH + sqlcipher_export.
+fn encrypt_plaintext_db(path: &Path, key: &str) -> Result<Connection, String> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("rgain.sqlite3");
+    let tmp = parent.join(format!("{stem}.encrypting.tmp"));
+    let bak = parent.join(format!("{stem}.pre_cipher.bak"));
+
+    let _ = std::fs::remove_file(&tmp);
+
+    let plain = Connection::open(path).map_err(|e| e.to_string())?;
+    if !db_is_readable(&plain) {
+        return Err(
+            "sqlcipher: database exists but cannot be opened (missing keyring secret or corrupt)"
+                .into(),
+        );
+    }
+    let _ = plain.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+
+    let tmp_lit = sql_quote_literal(&tmp.to_string_lossy());
+    let key_lit = sql_quote_literal(key);
+    plain
+        .execute_batch(&format!(
+            "ATTACH DATABASE {tmp_lit} AS encrypted KEY {key_lit};
+             SELECT sqlcipher_export('encrypted');
+             DETACH DATABASE encrypted;"
+        ))
+        .map_err(|e| format!("sqlcipher_export: {e}"))?;
+    drop(plain);
+
+    remove_sqlite_sidecars(path);
+    if bak.exists() {
+        let _ = std::fs::remove_file(&bak);
+    }
+    std::fs::rename(path, &bak).map_err(|e| format!("sqlcipher backup rename: {e}"))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::rename(&bak, path);
+        format!("sqlcipher replace encrypted: {e}")
+    })?;
+
+    try_open_with_key(path, key)
+}
+
+fn generate_db_key() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn dpapi_key_path(db_path: &Path) -> PathBuf {
+    db_path.with_file_name("sqlcipher.dpapi")
+}
+
+#[cfg(windows)]
+fn dpapi_protect(plain: &[u8]) -> Result<Vec<u8>, String> {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Cryptography::{
+        CryptProtectData, CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN,
+    };
+
+    let mut input = CRYPT_INTEGER_BLOB {
+        cbData: plain.len() as u32,
+        pbData: plain.as_ptr() as *mut u8,
+    };
+    let mut output = CRYPT_INTEGER_BLOB {
+        cbData: 0,
+        pbData: std::ptr::null_mut(),
+    };
+    let ok = unsafe {
+        CryptProtectData(
+            &mut input,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+    };
+    if ok == 0 {
+        return Err("dpapi protect failed".into());
+    }
+    let bytes = unsafe {
+        let slice = std::slice::from_raw_parts(output.pbData, output.cbData as usize);
+        let owned = slice.to_vec();
+        let _ = LocalFree(output.pbData as _);
+        owned
+    };
+    Ok(bytes)
+}
+
+#[cfg(windows)]
+fn dpapi_unprotect(blob: &[u8]) -> Result<Vec<u8>, String> {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Cryptography::{
+        CryptUnprotectData, CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN,
+    };
+
+    let mut input = CRYPT_INTEGER_BLOB {
+        cbData: blob.len() as u32,
+        pbData: blob.as_ptr() as *mut u8,
+    };
+    let mut output = CRYPT_INTEGER_BLOB {
+        cbData: 0,
+        pbData: std::ptr::null_mut(),
+    };
+    let ok = unsafe {
+        CryptUnprotectData(
+            &mut input,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+    };
+    if ok == 0 {
+        return Err("dpapi unprotect failed".into());
+    }
+    let bytes = unsafe {
+        let slice = std::slice::from_raw_parts(output.pbData, output.cbData as usize);
+        let owned = slice.to_vec();
+        let _ = LocalFree(output.pbData as _);
+        owned
+    };
+    Ok(bytes)
+}
+
+#[cfg(not(windows))]
+fn dpapi_protect(plain: &[u8]) -> Result<Vec<u8>, String> {
+    Ok(plain.to_vec())
+}
+
+#[cfg(not(windows))]
+fn dpapi_unprotect(blob: &[u8]) -> Result<Vec<u8>, String> {
+    Ok(blob.to_vec())
+}
+
+fn load_dpapi_key(db_path: &Path) -> Option<String> {
+    let path = dpapi_key_path(db_path);
+    let blob = std::fs::read(&path).ok()?;
+    let plain = dpapi_unprotect(&blob).ok()?;
+    let key = String::from_utf8(plain).ok()?;
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        None
+    } else {
+        Some(key)
+    }
+}
+
+fn save_dpapi_key(db_path: &Path, key: &str) -> Result<(), String> {
+    let path = dpapi_key_path(db_path);
+    let blob = dpapi_protect(key.as_bytes())?;
+    std::fs::write(&path, blob).map_err(|e| format!("write dpapi key: {e}"))
+}
+
+fn load_keyring_key() -> Option<String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).ok()?;
+    match entry.get_password() {
+        Ok(key) if !key.trim().is_empty() => Some(key),
+        _ => None,
+    }
+}
+
+fn save_keyring_key(key: &str) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
+        .map_err(|e| format!("keyring entry: {e}"))?;
+    entry
+        .set_password(key)
+        .map_err(|e| format!("keyring set: {e}"))
+}
+
+/// Persist release key to DPAPI file (authoritative) and best-effort keyring mirror.
+fn persist_release_key(db_path: &Path, key: &str) -> Result<(), String> {
+    save_dpapi_key(db_path, key)?;
+    if let Err(err) = save_keyring_key(key) {
+        crate::logutil::warn(&format!("keyring mirror failed (dpapi ok): {err}"));
+    }
+    Ok(())
+}
+
+/// Release: load existing key, or create one only when the DB does not exist yet.
+fn get_or_create_release_db_key(db_path: &Path, preexisting_db: bool) -> Result<String, String> {
+    if let Some(key) = load_dpapi_key(db_path) {
+        crate::logutil::info("db_key_source=dpapi_file");
+        let _ = save_keyring_key(&key);
+        return Ok(key);
+    }
+    if let Some(key) = load_keyring_key() {
+        crate::logutil::info("db_key_source=keyring");
+        // Heal missing DPAPI mirror so later restarts do not regenerate.
+        if let Err(err) = save_dpapi_key(db_path, &key) {
+            crate::logutil::warn(&format!("dpapi heal failed: {err}"));
+        }
+        return Ok(key);
+    }
+
+    if preexisting_db {
+        return Err(
+            "sqlcipher: existing DB found but no persisted key \
+             (sqlcipher.dpapi / keyring missing). Delete Rgain.sqlite3 to reset."
+                .into(),
+        );
+    }
+
+    let key = generate_db_key();
+    persist_release_key(db_path, &key)?;
+    crate::logutil::info("db_key_source=generated_new");
+    Ok(key)
+}
+
+fn resolve_db_key(db_path: &Path, preexisting_db: bool) -> Result<String, String> {
+    if cfg!(debug_assertions) {
+        // Dev / tauri dev: stable fixed key, no Windows Credential Manager.
+        crate::logutil::info("db_key_source=legacy_debug");
+        Ok(LEGACY_SQLITE_KEY.to_string())
+    } else {
+        get_or_create_release_db_key(db_path, preexisting_db)
+    }
+}
+
+fn try_open_with_key(path: &Path, key: &str) -> Result<Connection, String> {
+    let conn = Connection::open(path).map_err(|e| e.to_string())?;
+    apply_cipher_key(&conn, key)?;
+    if db_is_readable(&conn) {
+        return Ok(conn);
+    }
+    Err("sqlcipher: key rejected".into())
+}
+
+fn open_encrypted_or_migrate(path: &Path) -> Result<Connection, String> {
+    let preexisting = path.is_file()
+        && std::fs::metadata(path)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false);
+
+    let db_key = resolve_db_key(path, preexisting)?;
+
+    // New / empty file.
+    if !preexisting {
+        let conn = Connection::open(path).map_err(|e| e.to_string())?;
+        apply_cipher_key(&conn, &db_key)?;
+        conn.execute_batch("SELECT count(*) FROM sqlite_master;")
+            .map_err(|e| format!("sqlcipher init: {e}"))?;
+        return Ok(conn);
+    }
+
+    if let Ok(conn) = try_open_with_key(path, &db_key) {
+        return Ok(conn);
+    }
+
+    // Release only: migrate DBs that were still on the old fixed passphrase.
+    if !cfg!(debug_assertions) {
+        if let Ok(conn) = try_open_with_key(path, LEGACY_SQLITE_KEY) {
+            rekey_cipher(&conn, &db_key)?;
+            let _ = persist_release_key(path, &db_key);
+            return Ok(conn);
+        }
+    }
+
+    // Plaintext DB (pre-SQLCipher): export into a new encrypted file.
+    encrypt_plaintext_db(path, &db_key).map_err(|err| {
+        if err.contains("missing keyring secret or corrupt") {
+            format!(
+                "sqlcipher: cannot open existing DB with current key. \
+                 Delete Rgain.sqlite3 (and sqlcipher.dpapi) under the app data dir to reset. \
+                 detail={err}"
+            )
+        } else {
+            err
+        }
+    })
 }
 
 pub fn open_db(path: &Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let conn = Connection::open(path).map_err(|e| e.to_string())?;
+    let conn = open_encrypted_or_migrate(path)?;
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
         .map_err(|e| e.to_string())?;
     migrate(&conn)?;
@@ -415,6 +813,10 @@ pub fn get_settings(conn: &Connection) -> Result<AppSettings, String> {
             "think_enabled" => {
                 settings.think_enabled = matches!(value.as_str(), "1" | "true" | "TRUE" | "yes")
             }
+            "ignore_paths" => {
+                let parsed: Vec<String> = serde_json::from_str(&value).unwrap_or_default();
+                settings.ignore_paths = normalize_ignore_paths(parsed);
+            }
             // theme is frontend-only (localStorage); ignore legacy DB rows
             _ => {}
         }
@@ -441,6 +843,8 @@ pub fn save_settings(conn: &Connection, settings: &AppSettings) -> Result<(), St
     let term_font_px = clamp_font_px(settings.term_font_px, default_term_font_px()).to_string();
     let graph_font_px = clamp_font_px(settings.graph_font_px, default_graph_font_px()).to_string();
     let think_enabled = if settings.think_enabled { "true" } else { "false" };
+    let ignore_paths = serde_json::to_string(&normalize_ignore_paths(settings.ignore_paths.clone()))
+        .unwrap_or_else(|_| "[]".into());
     let pairs = [
         ("api_base_url", settings.api_base_url.as_str()),
         ("api_key", settings.api_key.as_str()),
@@ -455,6 +859,7 @@ pub fn save_settings(conn: &Connection, settings: &AppSettings) -> Result<(), St
         ("graph_font_px", graph_font_px.as_str()),
         ("chunk_size_mb", chunk_size_mb.as_str()),
         ("think_enabled", think_enabled),
+        ("ignore_paths", ignore_paths.as_str()),
         ("mcp_enabled", mcp_enabled),
         ("mcp_server_url", settings.mcp_server_url.as_str()),
     ];
@@ -488,6 +893,7 @@ pub fn save_public_settings(conn: &Connection, incoming: &PublicSettings) -> Res
     current.graph_font_px = clamp_font_px(incoming.graph_font_px, default_graph_font_px());
     current.chunk_size_mb = clamp_chunk_size_mb(incoming.chunk_size_mb);
     current.think_enabled = incoming.think_enabled;
+    current.ignore_paths = normalize_ignore_paths(incoming.ignore_paths.clone());
     current.mcp_enabled = incoming.mcp_enabled;
     current.mcp_server_url = incoming.mcp_server_url.clone();
     if !is_keep_api_key(&incoming.api_key, &current.api_key) {

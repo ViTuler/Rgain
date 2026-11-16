@@ -35,6 +35,12 @@ venv/
 *.egg-info/
 .pytest_cache/
 .mypy_cache/
+python/build/
+python/dist/
+src-tauri/sidecars/*.exe
+src-tauri/sidecars/rgain_parser
+src-tauri/native/*.dll
+src-tauri/native/*.dll
 
 # Local secrets / env
 .env

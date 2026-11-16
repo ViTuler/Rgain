@@ -9,20 +9,6 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-const SKIP_DIRS: &[&str] = &[
-    ".git",
-    "node_modules",
-    "target",
-    "dist",
-    "build",
-    "__pycache__",
-    ".venv",
-    "venv",
-    ".idea",
-    ".vscode",
-    "vendor",
-];
-
 const TEXT_EXTS: &[&str] = &[
     "md", "txt", "py", "rs", "ts", "tsx", "js", "jsx", "vue", "cpp", "cc", "cxx", "c", "h",
     "hpp", "rc", "java", "kt", "go", "json", "toml", "yaml", "yml", "css", "scss", "html",
@@ -104,11 +90,28 @@ fn is_doc_ext(ext: &str) -> bool {
     DOC_EXTS.iter().any(|e| *e == ext)
 }
 
-fn should_skip_dir(name: &str) -> bool {
-    SKIP_DIRS.iter().any(|d| *d == name)
+fn path_is_ignored(rel: &str, name: &str, ignores: &[String]) -> bool {
+    let rel_key = rel.replace('\\', "/").trim_matches('/').to_ascii_lowercase();
+    let name_key = name.to_ascii_lowercase();
+    for raw in ignores {
+        let pattern = raw.replace('\\', "/").trim_matches('/').to_ascii_lowercase();
+        if pattern.is_empty() {
+            continue;
+        }
+        if !pattern.contains('/') {
+            if name_key == pattern {
+                return true;
+            }
+            continue;
+        }
+        if rel_key == pattern || rel_key.starts_with(&(pattern.clone() + "/")) {
+            return true;
+        }
+    }
+    false
 }
 
-pub fn collect_candidate_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+pub fn collect_candidate_files(root: &Path, ignore_paths: &[String]) -> Result<Vec<PathBuf>, String> {
     if root.is_file() {
         if !is_supported_book_file(root) {
             return Err(format!(
@@ -122,7 +125,7 @@ pub fn collect_candidate_files(root: &Path) -> Result<Vec<PathBuf>, String> {
         return Err("root_path_missing".into());
     }
     let mut out = Vec::new();
-    walk(root, root, &mut out)?;
+    walk(root, root, ignore_paths, &mut out)?;
     out.sort();
     if out.len() > MAX_FILES {
         out.truncate(MAX_FILES);
@@ -130,7 +133,12 @@ pub fn collect_candidate_files(root: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(out)
 }
 
-fn walk(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+fn walk(
+    root: &Path,
+    dir: &Path,
+    ignore_paths: &[String],
+    out: &mut Vec<PathBuf>,
+) -> Result<(), String> {
     if out.len() >= MAX_FILES {
         return Ok(());
     }
@@ -139,17 +147,12 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with('.') && name != ".env.example" {
-            // keep hidden files skipped except we already listed common dirs
-            if path.is_dir() {
-                continue;
-            }
-        }
         if path.is_dir() {
-            if should_skip_dir(&name) {
+            let rel = rel_path(root, &path);
+            if path_is_ignored(&rel, &name, ignore_paths) {
                 continue;
             }
-            walk(root, &path, out)?;
+            walk(root, &path, ignore_paths, out)?;
             continue;
         }
         let ext = ext_of(&path);
@@ -257,12 +260,13 @@ pub fn extract_project_files(
     sidecar: &SidecarState,
     project_id: i64,
     root: &Path,
+    ignore_paths: &[String],
 ) -> Result<(Vec<ExtractedFile>, Vec<String>), String> {
     logutil::info(&format!(
         "extract_project_begin project_id={project_id} root={}",
         root.display()
     ));
-    let files = collect_candidate_files(root)?;
+    let files = collect_candidate_files(root, ignore_paths)?;
     logutil::info(&format!(
         "extract_candidates project_id={project_id} count={}",
         files.len()
@@ -672,5 +676,15 @@ mod tests {
         assert!(chunks.len() >= 3, "chunks={}", chunks.len());
         assert_eq!(chunks.concat(), corpus);
         assert!(chunks.last().unwrap().starts_with("第 2 章\u{3000}乙"));
+    }
+
+    #[test]
+    fn ignore_matches_dir_name_and_relative_path() {
+        let ignores = vec!["node_modules".into(), "src/generated".into()];
+        assert!(super::path_is_ignored("node_modules", "node_modules", &ignores));
+        assert!(super::path_is_ignored("pkg/Node_Modules", "Node_Modules", &ignores));
+        assert!(super::path_is_ignored("src/generated", "generated", &ignores));
+        assert!(super::path_is_ignored("src/generated/extra", "extra", &ignores));
+        assert!(!super::path_is_ignored("src/app", "app", &ignores));
     }
 }

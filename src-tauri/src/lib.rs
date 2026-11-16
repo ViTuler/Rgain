@@ -314,7 +314,7 @@ fn run_ingest_sync(
 
     let extract = {
         let conn = db.conn.lock().map_err(|e| e.to_string())?;
-        ingest::extract_project_files(&conn, sidecar, project.id, &root)
+        ingest::extract_project_files(&conn, sidecar, project.id, &root, &settings.ignore_paths)
     };
 
     let (files, mut warnings) = match extract {
@@ -468,7 +468,17 @@ pub fn run() {
                 .map_err(|e| format!("app_data_dir: {e}"))?;
             let _ = logutil::init(&app_data);
             logutil::info(&format!("app_start data_dir={}", app_data.display()));
-            let conn = db::open_db(&db::db_path(&app_data))?;
+            let db_file = db::db_path(&app_data);
+            let conn = match db::open_db(&db_file) {
+                Ok(c) => c,
+                Err(err) => {
+                    logutil::error(&format!(
+                        "open_db failed path={} err={err}",
+                        db_file.display()
+                    ));
+                    return Err(err.into());
+                }
+            };
             if let Ok(port) = dev_port::read_dev_port_file() {
                 let _ = db::upsert_setting(&conn, "dev_port", &port.to_string());
             }
@@ -478,6 +488,7 @@ pub fn run() {
             app.manage(SidecarState {
                 child: Mutex::new(None),
             });
+            logutil::info("app_setup_ok");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

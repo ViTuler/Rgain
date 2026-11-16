@@ -2,17 +2,70 @@
 
 from __future__ import annotations
 
+import io
 import json
+import os
 import sys
-from typing import Any
+from typing import Any, Optional, TextIO
 
 from . import __version__
 from .extract import extract_file
 
 
+def _reopen_fd(fd: int, mode: str) -> Optional[TextIO]:
+    """Rebind a stdio stream from an inherited OS handle (windowed PyInstaller)."""
+    try:
+        # Validate the fd is usable before wrapping.
+        os.fstat(fd)
+    except OSError:
+        return None
+    try:
+        raw = open(fd, mode + "b", buffering=0, closefd=False)  # noqa: SIM115
+        return io.TextIOWrapper(
+            raw,
+            encoding="utf-8",
+            errors="replace",
+            line_buffering=True,
+            write_through=True,
+        )
+    except OSError:
+        return None
+
+
+def _ensure_stdio() -> None:
+    """
+    PyInstaller console=False leaves sys.stdin/stdout/stderr as None when not
+    attached to a console. When Rgain spawns us with pipes, the fds are still
+    valid — reopen them so the JSON line protocol works.
+    """
+    if sys.stdin is None:
+        stream = _reopen_fd(0, "r")
+        if stream is not None:
+            sys.stdin = stream
+    if sys.stdout is None:
+        stream = _reopen_fd(1, "w")
+        if stream is not None:
+            sys.stdout = stream
+    if sys.stderr is None:
+        stream = _reopen_fd(2, "w")
+        if stream is not None:
+            sys.stderr = stream
+
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        if stream is None:
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+
 def _write(obj: dict[str, Any]) -> None:
-    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+    out = sys.stdout
+    if out is None:
+        return
+    out.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    out.flush()
 
 
 def _handle(msg: dict[str, Any]) -> dict[str, Any]:
@@ -60,12 +113,23 @@ def _handle(msg: dict[str, Any]) -> dict[str, Any]:
 
 
 def run() -> None:
-    # Force UTF-8 on stdio so Chinese/Unicode book paths survive Windows pipes.
-    for stream in (sys.stdin, sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
-        except Exception:
-            pass
+    _ensure_stdio()
+
+    if sys.stdin is None or not hasattr(sys.stdin, "buffer") or sys.stdout is None:
+        # Double-clicked windowed exe with no pipes: exit quietly.
+        log_dir = os.environ.get("RGAIN_LOG_DIR", "").strip()
+        if log_dir:
+            try:
+                os.makedirs(log_dir, exist_ok=True)
+                with open(
+                    os.path.join(log_dir, "sidecar_boot.log"),
+                    "a",
+                    encoding="utf-8",
+                ) as fh:
+                    fh.write("sidecar started without stdio pipes; exiting\n")
+            except OSError:
+                pass
+        return
 
     _write(
         {

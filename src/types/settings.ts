@@ -49,6 +49,8 @@ export type AppSettings = {
   chunk_size_mb: number;
   /** Ask reasoning models to think before answering. Default on. */
   think_enabled: boolean;
+  /** Directory names or relative paths skipped when scanning a project folder. */
+  ignore_paths: string[];
 
   /** MCP（预设，二期） */
   mcp_enabled: boolean;
@@ -59,6 +61,42 @@ export type AppSettings = {
 export const DEFAULT_CHUNK_SIZE_MB = 0.5;
 export const MIN_CHUNK_SIZE_MB = 0.1;
 export const MAX_CHUNK_SIZE_MB = 8;
+
+/** Directory names skipped while scanning a project folder. Checked by default. */
+export const DEFAULT_IGNORE_PATHS = [
+  "node_modules",
+  "dist",
+  "dist-ssr",
+  "build",
+  "out",
+  "target",
+  ".git",
+  ".svn",
+  "__pycache__",
+  ".venv",
+  "venv",
+  ".tox",
+  ".pytest_cache",
+  ".mypy_cache",
+  ".ruff_cache",
+  ".cache",
+  ".parcel-cache",
+  ".turbo",
+  ".next",
+  ".nuxt",
+  ".output",
+  "coverage",
+  "htmlcov",
+  ".nyc_output",
+  "vendor",
+  "bower_components",
+  ".gradle",
+  ".dart_tool",
+  "bin",
+  "obj",
+  ".idea",
+  ".vscode",
+];
 
 export const default_settings: AppSettings = {
   explain_hotkey: "Ctrl+Shift+E",
@@ -75,6 +113,7 @@ export const default_settings: AppSettings = {
   agent_prompt: "",
   chunk_size_mb: DEFAULT_CHUNK_SIZE_MB,
   think_enabled: true,
+  ignore_paths: [...DEFAULT_IGNORE_PATHS],
   mcp_enabled: false,
   mcp_server_url: "",
 };
@@ -96,6 +135,31 @@ export function clamp_font_px(value: unknown, fallback: number): number {
   if (n < FONT_PX_MIN) return FONT_PX_MIN;
   if (n > FONT_PX_MAX) return FONT_PX_MAX;
   return n;
+}
+
+export function normalize_ignore_path(raw: string): string {
+  let text = raw.trim().replace(/\\/g, "/");
+  while (text.startsWith("./")) text = text.slice(2);
+  text = text.replace(/^\/+|\/+$/g, "");
+  if (!text || text === "." || text === ".." || text.split("/").includes("..")) return "";
+  if (/^[a-zA-Z]:/.test(text)) return "";
+  if (text.length > 120) return "";
+  return text;
+}
+
+export function normalize_ignore_paths(value: unknown): string[] {
+  const source = Array.isArray(value) ? value : DEFAULT_IGNORE_PATHS;
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of source) {
+    const path = normalize_ignore_path(String(item));
+    const key = path.toLowerCase();
+    if (!path || seen.has(key)) continue;
+    seen.add(key);
+    out.push(path);
+    if (out.length >= 64) break;
+  }
+  return out;
 }
 
 export function clamp_chunk_size_mb(value: unknown): number {

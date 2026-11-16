@@ -1,0 +1,6 @@
+# Windows SQLCipher link against conda env `rgain` OpenSSL.
+# Matches the hardcoded DEV_PYTHON path style in sidecar.rs.
+# Override with env OPENSSL_DIR if your install differs.
+[env]
+OPENSSL_DIR = "E:/Conda/envs/rgain/Library"
+OPENSSL_NO_VENDOR = "1"

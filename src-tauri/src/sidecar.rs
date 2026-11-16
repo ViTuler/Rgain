@@ -52,6 +52,7 @@ impl SidecarLaunch {
                     .stdout(Stdio::piped())
                     .stderr(stderr);
                 apply_sidecar_env(&mut cmd);
+                hide_console_window(&mut cmd);
                 cmd.spawn().map_err(|e| {
                     format!(
                         "spawn dev python failed: {e} (python={} cwd={})",
@@ -66,11 +67,23 @@ impl SidecarLaunch {
                     .stdout(Stdio::piped())
                     .stderr(stderr);
                 apply_sidecar_env(&mut cmd);
+                hide_console_window(&mut cmd);
                 cmd.spawn()
                     .map_err(|e| format!("spawn bundled sidecar failed: {e} (exe={})", exe.display()))
             }
         }
     }
+}
+
+fn hide_console_window(cmd: &mut Command) {
+    // Avoid a flash console when spawning python / console-mode helpers on Windows.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let _ = cmd;
 }
 
 fn sidecar_stderr_stdio() -> Stdio {
@@ -183,7 +196,8 @@ pub fn ensure_sidecar(state: &SidecarState) -> Result<(), String> {
     let stdout = child.stdout.take().ok_or("missing stdout")?;
     let mut reader = BufReader::new(stdout);
 
-    let ready = read_line_timeout(&mut reader, Duration::from_secs(8))?;
+    // onefile PyInstaller cold-extract can exceed 8s on first launch.
+    let ready = read_line_timeout(&mut reader, Duration::from_secs(60))?;
     let ready_json: Value =
         serde_json::from_str(&ready).map_err(|e| format!("ready parse: {e}; line={ready}"))?;
     if ready_json.get("event").and_then(|v| v.as_str()) != Some("ready") {

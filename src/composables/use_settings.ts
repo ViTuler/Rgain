@@ -9,6 +9,7 @@ import {
     clamp_dev_port,
     clamp_font_px,
     default_settings,
+    normalize_ignore_paths,
     type AppSettings,
 } from "../types/settings";
 
@@ -33,6 +34,9 @@ function normalize_settings(data: Partial<AppSettings>): AppSettings {
             data.chunk_size_mb ?? default_settings.chunk_size_mb,
         ),
         think_enabled: data.think_enabled ?? default_settings.think_enabled,
+        ignore_paths: normalize_ignore_paths(
+            data.ignore_paths ?? default_settings.ignore_paths,
+        ),
         mcp_enabled: Boolean(data.mcp_enabled),
         mcp_server_url: data.mcp_server_url ?? "",
         dev_port: clamp_dev_port(data.dev_port ?? default_settings.dev_port),

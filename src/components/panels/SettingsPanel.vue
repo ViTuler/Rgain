@@ -1,15 +1,18 @@
 <script setup lang="ts">
-import { computed, reactive, watch } from "vue";
+import { computed, reactive, ref, watch } from "vue";
 import HotkeyCapture from "../chrome/HotkeyCapture.vue";
+import UiCheckbox from "../chrome/UiCheckbox.vue";
 import UiSwitch from "../chrome/UiSwitch.vue";
 import { locale_options, set_locale, use_i18n, type UiLocale } from "../../i18n";
 import {
+    DEFAULT_IGNORE_PATHS,
     FONT_PX_MAX,
     FONT_PX_MIN,
     looks_like_masked_api_key,
     MAX_CHUNK_SIZE_MB,
     MIN_CHUNK_SIZE_MB,
     MIN_DEV_PORT,
+    normalize_ignore_path,
     type AppSettings,
 } from "../../types/settings";
 
@@ -33,7 +36,40 @@ const emit = defineEmits<{
 
 const { t } = use_i18n();
 const draft = reactive<AppSettings>({ ...props.model_value });
+const ignore_draft = ref("");
 const options = computed(() => locale_options.value);
+const custom_ignores = computed(() =>
+    draft.ignore_paths.filter(
+        (item) => !DEFAULT_IGNORE_PATHS.some((preset) => path_key(preset) === path_key(item)),
+    ),
+);
+
+function path_key(path: string): string {
+    return path.replace(/\\/g, "/").toLowerCase();
+}
+
+function ignore_on(path: string): boolean {
+    const key = path_key(path);
+    return draft.ignore_paths.some((item) => path_key(item) === key);
+}
+
+function toggle_ignore(path: string, on: boolean) {
+    const key = path_key(path);
+    const next = draft.ignore_paths.filter((item) => path_key(item) !== key);
+    if (on) {
+        const clean = normalize_ignore_path(path);
+        if (clean) next.push(clean);
+    }
+    draft.ignore_paths = next;
+    on_input();
+}
+
+function add_ignore() {
+    const clean = normalize_ignore_path(ignore_draft.value);
+    ignore_draft.value = "";
+    if (!clean) return;
+    toggle_ignore(clean, true);
+}
 
 watch(
     () => props.model_value,
@@ -166,6 +202,36 @@ function on_api_key_blur() {
                         />
                         <span class="hint">{{ t("settings.font_hint") }}</span>
                     </label>
+                    <div class="ignore_block">
+                        <span class="ignore_title">{{ t("settings.ignore_paths") }}</span>
+                        <div class="ignore_grid">
+                            <UiCheckbox
+                                v-for="path in DEFAULT_IGNORE_PATHS"
+                                :key="path"
+                                :model_value="ignore_on(path)"
+                                :label="path"
+                                @update:model_value="(on) => toggle_ignore(path, on)"
+                            />
+                            <UiCheckbox
+                                v-for="path in custom_ignores"
+                                :key="path"
+                                :model_value="true"
+                                :label="path"
+                                @update:model_value="(on) => toggle_ignore(path, on)"
+                            />
+                        </div>
+                        <div class="ignore_add">
+                            <input
+                                v-model="ignore_draft"
+                                :placeholder="t('settings.ignore_placeholder')"
+                                @keydown.enter.prevent="add_ignore"
+                            />
+                            <button type="button" class="btn_inline" @click="add_ignore">
+                                {{ t("settings.ignore_add") }}
+                            </button>
+                        </div>
+                        <span class="hint">{{ t("settings.ignore_paths_hint") }}</span>
+                    </div>
                 </section>
 
                 <section class="group">
@@ -446,6 +512,51 @@ label {
     flex-direction: row;
     align-items: center;
     gap: 0.45rem;
+}
+
+.ignore_block {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+}
+
+.ignore_title {
+    font-size: 0.8rem;
+    color: var(--color_muted);
+}
+
+.ignore_grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+    gap: 0.4rem 0.75rem;
+    max-height: 9.5rem;
+    overflow: auto;
+    padding: 0.55rem 0.65rem;
+    border: 1px solid var(--color_line);
+    border-radius: var(--radius_md);
+    background: var(--color_surface_2);
+}
+
+.ignore_grid :deep(.el_check) {
+    flex-direction: row;
+    align-items: center;
+    min-width: 0;
+}
+
+.ignore_grid :deep(.el_label) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ignore_add {
+    display: flex;
+    gap: 0.4rem;
+}
+
+.ignore_add input {
+    flex: 1;
+    min-width: 0;
 }
 
 .switch_row {

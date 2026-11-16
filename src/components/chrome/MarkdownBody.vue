@@ -26,12 +26,7 @@ function on_click(event: MouseEvent) {
 </script>
 
 <template>
-    <div
-        class="md_body"
-        :class="size === 'term' ? 'md_term' : 'md_explain'"
-        v-html="html"
-        @click="on_click"
-    />
+    <div class="md_body" :class="size === 'term' ? 'md_term' : 'md_explain'" v-html="html" @click="on_click" />
 </template>
 
 <style scoped>
