@@ -1,5 +1,5 @@
-# Install into a dedicated env (never conda base), e.g.:
-#   conda activate <your-env>
+# Install into dedicated conda env `rgain` (never base), e.g.:
+#   conda activate rgain
 #   pip install -r python/requirements.txt
 #
 # health/echo works with stdlib alone.

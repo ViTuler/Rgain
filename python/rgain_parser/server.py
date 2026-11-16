@@ -26,7 +26,7 @@ def _handle(msg: dict[str, Any]) -> dict[str, Any]:
             "data": {
                 "status": "ok",
                 "version": __version__,
-                "env": "vi",
+                "env": "rgain",
                 "caps": ["extract_pdf", "extract_epub", "extract_mobi"],
             },
         }

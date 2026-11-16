@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import LeftPanel from "./components/panels/LeftPanel.vue";
@@ -17,7 +17,7 @@ import { use_settings } from "./composables/use_settings";
 import { use_theme } from "./composables/use_theme";
 import { set_locale, use_i18n } from "./i18n";
 import type { AppSettings } from "./types/settings";
-import type { GraphNode, GraphPayload } from "./types/graph";
+import type { GraphNode, GraphPayload, GraphTagFilter } from "./types/graph";
 import type { IngestResult, ProjectRow, RunRow } from "./types/project";
 import type { ExplainTermResult } from "./types/term";
 
@@ -51,6 +51,23 @@ let toast_timer: ReturnType<typeof setTimeout> | null = null;
 const current_graph = ref<GraphPayload | null>(null);
 const selected_label = ref("");
 const selected_node = ref<GraphNode | null>(null);
+const tag_filter = ref<GraphTagFilter | null>(null);
+
+watch(
+    () => current_graph.value?.nodes,
+    () => {
+        tag_filter.value = null;
+    },
+);
+
+function on_toggle_tag(next: GraphTagFilter) {
+    const current = tag_filter.value;
+    if (current && current.field === next.field && current.value === next.value) {
+        tag_filter.value = null;
+        return;
+    }
+    tag_filter.value = next;
+}
 
 const graph_title = computed(() => current_graph.value?.meta.title || "");
 const explain_hotkey = computed(() => settings.value.explain_hotkey || "Ctrl+Shift+E");
@@ -342,6 +359,7 @@ async function on_run_ingest() {
                     id: result.run_id,
                     files: result.files_processed,
                     cached: result.files_cached,
+                    chunks: result.chunks_processed || 1,
                     warn,
                 }),
                 "ok",
@@ -556,6 +574,8 @@ function on_selection_fab_explain() {
                 <LeftPanel
                     :project_label="project_label"
                     :project_path="project_path"
+                    :graph="current_graph"
+                    :selected_node_id="selected_node?.id ?? null"
                     :runs="runs"
                     :active_run_id="active_run_id"
                     :ingest_busy="ingest_busy"
@@ -567,10 +587,13 @@ function on_selection_fab_explain() {
                     @open_run="on_open_run"
                     @rename_run="on_rename_run"
                     @delete_run="on_delete_run"
+                    @select_node="on_select_node"
                 />
                 <LogicStage
                     :graph="current_graph"
                     :run_id="active_run_id"
+                    :tag_filter="tag_filter"
+                    :focus_node_id="selected_node?.id ?? null"
                     @select_node="on_select_node"
                 />
             </div>
@@ -580,6 +603,9 @@ function on_selection_fab_explain() {
                 :selected_label="selected_label"
                 :selected_node="selected_node"
                 :graph_title="graph_title"
+                :tag_filter="tag_filter"
+                @toggle_tag="on_toggle_tag"
+                @clear_tag="tag_filter = null"
             />
 
             <StatusToast

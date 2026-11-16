@@ -21,6 +21,16 @@ pub struct AppSettings {
     /// Show selection magnifier for term explain.
     pub selection_explain_enabled: bool,
     pub dev_port: u16,
+    /// Right-side node explain body, px.
+    pub explain_font_px: u16,
+    /// Selection / term explain body, px.
+    pub term_font_px: u16,
+    /// Logic-graph label size, px.
+    pub graph_font_px: u16,
+    /// Max extracted-text size (MiB) per LLM pass; oversized corpora are chunk-merged.
+    pub chunk_size_mb: f64,
+    /// Ask the model to run a thinking / reasoning pass when the API supports it.
+    pub think_enabled: bool,
     pub mcp_enabled: bool,
     pub mcp_server_url: String,
 }
@@ -41,6 +51,16 @@ pub struct PublicSettings {
     #[serde(default = "default_true")]
     pub selection_explain_enabled: bool,
     pub dev_port: u16,
+    #[serde(default = "default_explain_font_px")]
+    pub explain_font_px: u16,
+    #[serde(default = "default_term_font_px")]
+    pub term_font_px: u16,
+    #[serde(default = "default_graph_font_px")]
+    pub graph_font_px: u16,
+    #[serde(default = "default_chunk_size_mb")]
+    pub chunk_size_mb: f64,
+    #[serde(default = "default_true")]
+    pub think_enabled: bool,
     pub mcp_enabled: bool,
     pub mcp_server_url: String,
 }
@@ -51,6 +71,40 @@ fn default_ui_locale() -> String {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_chunk_size_mb() -> f64 {
+    0.5
+}
+
+pub const MIN_FONT_PX: u16 = 10;
+pub const MAX_FONT_PX: u16 = 32;
+
+fn default_explain_font_px() -> u16 {
+    14
+}
+
+fn default_term_font_px() -> u16 {
+    14
+}
+
+fn default_graph_font_px() -> u16 {
+    12
+}
+
+pub fn clamp_font_px(value: u16, fallback: u16) -> u16 {
+    if value < MIN_FONT_PX {
+        return fallback.clamp(MIN_FONT_PX, MAX_FONT_PX);
+    }
+    value.clamp(MIN_FONT_PX, MAX_FONT_PX)
+}
+
+pub fn clamp_chunk_size_mb(value: f64) -> f64 {
+    if !value.is_finite() {
+        return default_chunk_size_mb();
+    }
+    let rounded = (value * 100.0).round() / 100.0;
+    rounded.clamp(0.1, 8.0)
 }
 
 pub fn normalize_ui_locale(raw: &str) -> String {
@@ -74,6 +128,11 @@ impl Default for AppSettings {
             explain_hotkey: "Ctrl+Shift+E".into(),
             selection_explain_enabled: true,
             dev_port: crate::dev_port::DEFAULT_DEV_PORT,
+            explain_font_px: default_explain_font_px(),
+            term_font_px: default_term_font_px(),
+            graph_font_px: default_graph_font_px(),
+            chunk_size_mb: default_chunk_size_mb(),
+            think_enabled: true,
             mcp_enabled: false,
             mcp_server_url: String::new(),
         }
@@ -138,6 +197,11 @@ impl AppSettings {
             explain_hotkey: self.explain_hotkey.clone(),
             selection_explain_enabled: self.selection_explain_enabled,
             dev_port: self.dev_port,
+            explain_font_px: clamp_font_px(self.explain_font_px, default_explain_font_px()),
+            term_font_px: clamp_font_px(self.term_font_px, default_term_font_px()),
+            graph_font_px: clamp_font_px(self.graph_font_px, default_graph_font_px()),
+            chunk_size_mb: clamp_chunk_size_mb(self.chunk_size_mb),
+            think_enabled: self.think_enabled,
             mcp_enabled: self.mcp_enabled,
             mcp_server_url: self.mcp_server_url.clone(),
         }
@@ -328,11 +392,35 @@ pub fn get_settings(conn: &Connection) -> Result<AppSettings, String> {
                     settings.dev_port = crate::dev_port::clamp_dev_port(port);
                 }
             }
+            "explain_font_px" => {
+                if let Ok(px) = value.parse::<u16>() {
+                    settings.explain_font_px = clamp_font_px(px, default_explain_font_px());
+                }
+            }
+            "term_font_px" => {
+                if let Ok(px) = value.parse::<u16>() {
+                    settings.term_font_px = clamp_font_px(px, default_term_font_px());
+                }
+            }
+            "graph_font_px" => {
+                if let Ok(px) = value.parse::<u16>() {
+                    settings.graph_font_px = clamp_font_px(px, default_graph_font_px());
+                }
+            }
+            "chunk_size_mb" => {
+                if let Ok(mb) = value.parse::<f64>() {
+                    settings.chunk_size_mb = clamp_chunk_size_mb(mb);
+                }
+            }
+            "think_enabled" => {
+                settings.think_enabled = matches!(value.as_str(), "1" | "true" | "TRUE" | "yes")
+            }
             // theme is frontend-only (localStorage); ignore legacy DB rows
             _ => {}
         }
     }
     settings.ui_locale = normalize_ui_locale(&settings.ui_locale);
+    settings.chunk_size_mb = clamp_chunk_size_mb(settings.chunk_size_mb);
     Ok(settings)
 }
 
@@ -347,6 +435,12 @@ pub fn save_settings(conn: &Connection, settings: &AppSettings) -> Result<(), St
         "false"
     };
     let ui_locale = normalize_ui_locale(&settings.ui_locale);
+    let chunk_size_mb = clamp_chunk_size_mb(settings.chunk_size_mb).to_string();
+    let explain_font_px =
+        clamp_font_px(settings.explain_font_px, default_explain_font_px()).to_string();
+    let term_font_px = clamp_font_px(settings.term_font_px, default_term_font_px()).to_string();
+    let graph_font_px = clamp_font_px(settings.graph_font_px, default_graph_font_px()).to_string();
+    let think_enabled = if settings.think_enabled { "true" } else { "false" };
     let pairs = [
         ("api_base_url", settings.api_base_url.as_str()),
         ("api_key", settings.api_key.as_str()),
@@ -356,6 +450,11 @@ pub fn save_settings(conn: &Connection, settings: &AppSettings) -> Result<(), St
         ("explain_hotkey", settings.explain_hotkey.as_str()),
         ("selection_explain_enabled", selection_explain_enabled),
         ("dev_port", dev_port.as_str()),
+        ("explain_font_px", explain_font_px.as_str()),
+        ("term_font_px", term_font_px.as_str()),
+        ("graph_font_px", graph_font_px.as_str()),
+        ("chunk_size_mb", chunk_size_mb.as_str()),
+        ("think_enabled", think_enabled),
         ("mcp_enabled", mcp_enabled),
         ("mcp_server_url", settings.mcp_server_url.as_str()),
     ];
@@ -384,6 +483,11 @@ pub fn save_public_settings(conn: &Connection, incoming: &PublicSettings) -> Res
     current.explain_hotkey = incoming.explain_hotkey.clone();
     current.selection_explain_enabled = incoming.selection_explain_enabled;
     current.dev_port = crate::dev_port::clamp_dev_port(incoming.dev_port);
+    current.explain_font_px = clamp_font_px(incoming.explain_font_px, default_explain_font_px());
+    current.term_font_px = clamp_font_px(incoming.term_font_px, default_term_font_px());
+    current.graph_font_px = clamp_font_px(incoming.graph_font_px, default_graph_font_px());
+    current.chunk_size_mb = clamp_chunk_size_mb(incoming.chunk_size_mb);
+    current.think_enabled = incoming.think_enabled;
     current.mcp_enabled = incoming.mcp_enabled;
     current.mcp_server_url = incoming.mcp_server_url.clone();
     if !is_keep_api_key(&incoming.api_key, &current.api_key) {

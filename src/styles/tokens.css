@@ -155,6 +155,22 @@ button {
 }
 
 ::selection {
-  background: var(--color_accent);
-  color: var(--color_accent_ink);
+  background: #75eec5;
+  color: #10241c;
+}
+
+::-moz-selection {
+  background: #75eec5;
+  color: #10241c;
+}
+
+/* Common dark-editor highlight (VS Code), not the mint accent. */
+html[data-theme="dark"] ::selection {
+  background: #264f78;
+  color: #f3ecec;
+}
+
+html[data-theme="dark"] ::-moz-selection {
+  background: #264f78;
+  color: #f3ecec;
 }

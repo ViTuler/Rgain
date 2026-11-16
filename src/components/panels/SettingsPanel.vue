@@ -4,7 +4,11 @@ import HotkeyCapture from "../chrome/HotkeyCapture.vue";
 import UiSwitch from "../chrome/UiSwitch.vue";
 import { locale_options, set_locale, use_i18n, type UiLocale } from "../../i18n";
 import {
+    FONT_PX_MAX,
+    FONT_PX_MIN,
     looks_like_masked_api_key,
+    MAX_CHUNK_SIZE_MB,
+    MIN_CHUNK_SIZE_MB,
     MIN_DEV_PORT,
     type AppSettings,
 } from "../../types/settings";
@@ -128,6 +132,40 @@ function on_api_key_blur() {
                         />
                         <span class="hint">{{ t("settings.explain_hotkey_hint") }}</span>
                     </label>
+                    <label>
+                        {{ t("settings.explain_font") }}
+                        <input
+                            v-model.number="draft.explain_font_px"
+                            type="number"
+                            :min="FONT_PX_MIN"
+                            :max="FONT_PX_MAX"
+                            step="1"
+                            @input="on_input"
+                        />
+                    </label>
+                    <label>
+                        {{ t("settings.term_font") }}
+                        <input
+                            v-model.number="draft.term_font_px"
+                            type="number"
+                            :min="FONT_PX_MIN"
+                            :max="FONT_PX_MAX"
+                            step="1"
+                            @input="on_input"
+                        />
+                    </label>
+                    <label>
+                        {{ t("settings.graph_font") }}
+                        <input
+                            v-model.number="draft.graph_font_px"
+                            type="number"
+                            :min="FONT_PX_MIN"
+                            :max="FONT_PX_MAX"
+                            step="1"
+                            @input="on_input"
+                        />
+                        <span class="hint">{{ t("settings.font_hint") }}</span>
+                    </label>
                 </section>
 
                 <section class="group">
@@ -177,6 +215,34 @@ function on_api_key_blur() {
                     <label>
                         Model
                         <input v-model="draft.model" @input="on_input" />
+                    </label>
+                    <label class="switch_row">
+                        <span class="switch_copy">
+                            <span class="switch_title">{{ t("settings.think") }}</span>
+                            <span class="hint">{{ t("settings.think_hint") }}</span>
+                        </span>
+                        <UiSwitch
+                            :model_value="draft.think_enabled"
+                            :label="t('settings.think')"
+                            @update:model_value="
+                                (v) => {
+                                    draft.think_enabled = v;
+                                    on_input();
+                                }
+                            "
+                        />
+                    </label>
+                    <label>
+                        {{ t("settings.chunk_size_mb") }}
+                        <input
+                            v-model.number="draft.chunk_size_mb"
+                            type="number"
+                            :min="MIN_CHUNK_SIZE_MB"
+                            :max="MAX_CHUNK_SIZE_MB"
+                            step="0.1"
+                            @input="on_input"
+                        />
+                        <span class="hint">{{ t("settings.chunk_size_mb_hint") }}</span>
                     </label>
                     <label class="prompt_label">
                         <span class="prompt_head">

@@ -34,9 +34,14 @@ const DOC_EXTS: &[&str] = &["pdf", "epub", "mobi"];
 const MAX_TEXT_FILE_BYTES: u64 = 1_500_000;
 /// Books (pdf/epub/mobi) may be large; skip only absurd sizes during walk.
 const MAX_DOC_FILE_BYTES: u64 = 200_000_000;
-/// Corpus budget sent to the LLM (large books truncate with a warning).
-const MAX_TOTAL_CHARS: usize = 400_000;
+/// Safety cap on total extracted UTF-8 chars kept in memory before chunked LLM passes.
+const MAX_EXTRACT_CHARS: usize = 30_000_000;
 const MAX_FILES: usize = 120;
+
+pub fn chunk_bytes_from_mb(mb: f64) -> usize {
+    let mb = db::clamp_chunk_size_mb(mb);
+    (mb * 1024.0 * 1024.0).round() as usize
+}
 
 pub fn is_supported_book_file(path: &Path) -> bool {
     path.is_file() && is_doc_ext(&ext_of(path))
@@ -63,6 +68,8 @@ pub struct IngestResult {
     pub status: String,
     pub files_processed: usize,
     pub files_cached: usize,
+    #[serde(default)]
+    pub chunks_processed: usize,
     pub graph: Option<Value>,
     pub error: Option<String>,
     pub warnings: Vec<String>,
@@ -284,8 +291,8 @@ pub fn extract_project_files(
                 cached: true,
                 warnings: vec![],
             });
-            if total_chars >= MAX_TOTAL_CHARS {
-                warnings.push("content_truncated_by_budget".into());
+            if total_chars >= MAX_EXTRACT_CHARS {
+                warnings.push("content_truncated_by_extract_cap".into());
                 break;
             }
             continue;
@@ -336,8 +343,8 @@ pub fn extract_project_files(
             cached: false,
             warnings: file_warnings,
         });
-        if total_chars >= MAX_TOTAL_CHARS {
-            warnings.push("content_truncated_by_budget".into());
+        if total_chars >= MAX_EXTRACT_CHARS {
+            warnings.push("content_truncated_by_extract_cap".into());
             break;
         }
     }
@@ -351,11 +358,18 @@ pub fn build_corpus(files: &[ExtractedFile]) -> String {
         if file.text.trim().is_empty() {
             continue;
         }
-        let chunk = format!("\n\n===== FILE: {} ({}) =====\n{}", file.path, file.kind, file.text);
-        if out.len() + chunk.len() > MAX_TOTAL_CHARS {
-            let remain = MAX_TOTAL_CHARS.saturating_sub(out.len());
+        let chunk = format!(
+            "\n\n===== FILE: {} ({}) =====\n{}",
+            file.path, file.kind, file.text
+        );
+        if out.len() >= MAX_EXTRACT_CHARS {
+            break;
+        }
+        if out.len() + chunk.len() > MAX_EXTRACT_CHARS {
+            let remain = MAX_EXTRACT_CHARS.saturating_sub(out.len());
             if remain > 64 {
-                out.push_str(&chunk[..remain]);
+                let end = floor_char_boundary(&chunk, remain);
+                out.push_str(&chunk[..end]);
                 out.push_str("\n...[truncated]...");
             }
             break;
@@ -365,15 +379,298 @@ pub fn build_corpus(files: &[ExtractedFile]) -> String {
     out
 }
 
-pub fn load_agent_prompt() -> String {
+fn floor_char_boundary(text: &str, max_bytes: usize) -> usize {
+    if max_bytes >= text.len() {
+        return text.len();
+    }
+    let mut idx = max_bytes;
+    while idx > 0 && !text.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
+}
+
+/// A heading this far from the next one is a real chapter, not a TOC line or a cross-reference.
+const MIN_CHAPTER_BODY: usize = 8 * 1024;
+
+/// Split on chapter headings when the source has them. `max_bytes` only splits a
+/// chapter that is itself longer than the cap, on a paragraph or file break.
+/// Sources without chapters stay one piece until they pass `max_bytes`.
+pub fn split_corpus_chunks(corpus: &str, max_bytes: usize) -> Vec<String> {
+    let max_bytes = max_bytes.max(64 * 1024);
+    let ranges = chapter_ranges(corpus);
+    if ranges.len() >= 2 {
+        let mut chunks = Vec::new();
+        for (start, end) in ranges {
+            let piece = &corpus[start..end];
+            if piece.trim().is_empty() {
+                continue;
+            }
+            if piece.len() <= max_bytes {
+                chunks.push(piece.to_string());
+            } else {
+                chunks.extend(split_by_size(piece, max_bytes));
+            }
+        }
+        if chunks.len() >= 2 {
+            logutil::info(&format!(
+                "corpus_split mode=chapter chunks={} max_bytes={max_bytes}",
+                chunks.len()
+            ));
+            return chunks;
+        }
+    }
+    if corpus.len() <= max_bytes {
+        return vec![corpus.to_string()];
+    }
+    let chunks = split_by_size(corpus, max_bytes);
+    logutil::info(&format!(
+        "corpus_split mode=size chunks={} max_bytes={max_bytes}",
+        chunks.len()
+    ));
+    chunks
+}
+
+fn split_by_size(corpus: &str, max_bytes: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut start = 0usize;
+    while start < corpus.len() {
+        if corpus.len() - start <= max_bytes {
+            chunks.push(corpus[start..].to_string());
+            break;
+        }
+        let soft_end = floor_char_boundary(corpus, start + max_bytes);
+        let window = &corpus[start..soft_end];
+        let break_at = window
+            .rfind("\n\n")
+            .map(|i| start + i + 2)
+            .filter(|i| *i > start + max_bytes / 4)
+            .or_else(|| {
+                window
+                    .rfind('\n')
+                    .map(|i| start + i + 1)
+                    .filter(|i| *i > start + max_bytes / 4)
+            })
+            .unwrap_or(soft_end);
+        let end = floor_char_boundary(corpus, break_at.max(start + 1));
+        chunks.push(corpus[start..end].to_string());
+        start = end;
+    }
+    chunks
+}
+
+/// Byte ranges covering `text`. Cuts sit on real chapter openings.
+fn chapter_ranges(text: &str) -> Vec<(usize, usize)> {
+    let heads = chapter_heading_bytes(text);
+    if heads.len() < 2 {
+        return Vec::new();
+    }
+    let mut cuts = Vec::new();
+    for (index, at) in heads.iter().enumerate() {
+        let next = heads.get(index + 1).copied().unwrap_or(text.len());
+        if next.saturating_sub(*at) >= MIN_CHAPTER_BODY {
+            cuts.push(*at);
+        }
+    }
+    if cuts.len() < 2 {
+        return Vec::new();
+    }
+    let mut ranges = Vec::new();
+    if cuts[0] > 0 {
+        ranges.push((0, cuts[0]));
+    }
+    for index in 0..cuts.len() {
+        let end = cuts.get(index + 1).copied().unwrap_or(text.len());
+        if end > cuts[index] {
+            ranges.push((cuts[index], end));
+        }
+    }
+    ranges
+}
+
+fn chapter_heading_bytes(text: &str) -> Vec<usize> {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let mut out = Vec::new();
+    let mut index = 0usize;
+    while index < chars.len() {
+        let at_line_start = index == 0 || chars[index - 1].1 == '\n';
+        if let Some(consumed) = match_cn_chapter(&chars[index..]) {
+            out.push(chars[index].0);
+            index += consumed.max(1);
+            continue;
+        }
+        if at_line_start {
+            if let Some(consumed) = match_en_chapter(&chars[index..]) {
+                out.push(chars[index].0);
+                index += consumed.max(1);
+                continue;
+            }
+        }
+        index += 1;
+    }
+    out
+}
+
+fn match_cn_chapter(chars: &[(usize, char)]) -> Option<usize> {
+    if chars.first().map(|item| item.1) != Some('第') {
+        return None;
+    }
+    let mut index = 1usize;
+    while index < chars.len() && chars[index].1 == ' ' {
+        index += 1;
+    }
+    let num_at = index;
+    if index < chars.len() && chars[index].1.is_ascii_digit() {
+        while index < chars.len() && chars[index].1.is_ascii_digit() {
+            index += 1;
+        }
+        let width = index - num_at;
+        if width == 0 || width > 3 {
+            return None;
+        }
+    } else {
+        while index < chars.len() && is_cn_numeral(chars[index].1) {
+            index += 1;
+        }
+        let width = index - num_at;
+        if width == 0 || width > 6 {
+            return None;
+        }
+    }
+    while index < chars.len() && chars[index].1 == ' ' {
+        index += 1;
+    }
+    if index >= chars.len() || chars[index].1 != '章' {
+        return None;
+    }
+    index += 1;
+    while index < chars.len() && chars[index].1 == ' ' {
+        index += 1;
+    }
+    if index < chars.len() && chars[index].1 == '\u{3000}' {
+        return Some(index + 1);
+    }
+    None
+}
+
+fn is_cn_numeral(ch: char) -> bool {
+    matches!(
+        ch,
+        '零' | '〇' | '一' | '二' | '三' | '四' | '五' | '六' | '七' | '八' | '九' | '十' | '百' | '千'
+    )
+}
+
+fn match_en_chapter(chars: &[(usize, char)]) -> Option<usize> {
+    let mut index = 0usize;
+    while index < chars.len() && (chars[index].1 == '#' || chars[index].1 == ' ') {
+        index += 1;
+    }
+    let word = ['c', 'h', 'a', 'p', 't', 'e', 'r'];
+    if index + word.len() >= chars.len() {
+        return None;
+    }
+    for (offset, expected) in word.iter().enumerate() {
+        if chars[index + offset].1.to_ascii_lowercase() != *expected {
+            return None;
+        }
+    }
+    index += word.len();
+    if chars[index].1 != ' ' && chars[index].1 != '\t' {
+        return None;
+    }
+    while index < chars.len() && (chars[index].1 == ' ' || chars[index].1 == '\t') {
+        index += 1;
+    }
+    if index >= chars.len() || !chars[index].1.is_ascii_digit() {
+        return None;
+    }
+    Some(index + 1)
+}
+
+fn load_prompt_file(name: &str, fallback: &str) -> String {
     let candidates = [
-        PathBuf::from("prompts/agent_system.txt"),
-        PathBuf::from("../prompts/agent_system.txt"),
+        PathBuf::from("prompts").join(name),
+        PathBuf::from("../prompts").join(name),
     ];
     for path in candidates {
         if let Ok(text) = fs::read_to_string(&path) {
             return text;
         }
     }
-    include_str!("../../prompts/agent_system.txt").to_string()
+    fallback.to_string()
+}
+
+pub fn load_agent_prompt() -> String {
+    load_prompt_file(
+        "agent_system.txt",
+        include_str!("../../prompts/agent_system.txt"),
+    )
+}
+
+pub fn load_book_prompt() -> String {
+    load_prompt_file(
+        "book_system.txt",
+        include_str!("../../prompts/book_system.txt"),
+    )
+}
+
+pub fn load_merge_prompt(book: bool) -> String {
+    if book {
+        load_prompt_file(
+            "book_merge.txt",
+            include_str!("../../prompts/book_merge.txt"),
+        )
+    } else {
+        load_prompt_file(
+            "graph_merge.txt",
+            include_str!("../../prompts/graph_merge.txt"),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_corpus_chunks;
+
+    fn long_cjk(ch: char, count: usize) -> String {
+        ch.to_string().repeat(count)
+    }
+
+    #[test]
+    fn splits_real_chapters_and_keeps_cross_refs() {
+        let toc = "目录 第 1 章\u{3000}甲要 第 2 章\u{3000}乙要\n";
+        let chapter_1 = format!(
+            "第 1 章\u{3000}甲要{}见第 2 章再谈{}",
+            long_cjk('甲', 3000),
+            long_cjk('甲', 200)
+        );
+        let chapter_2 = format!("第 2 章\u{3000}乙要{}", long_cjk('乙', 3000));
+        let corpus = format!("{toc}{chapter_1}{chapter_2}");
+        let chunks = split_corpus_chunks(&corpus, 8 * 1024 * 1024);
+        assert_eq!(chunks.concat(), corpus);
+        assert!(chunks.len() >= 2, "chunks={}", chunks.len());
+        assert!(
+            chunks.iter().any(|chunk| chunk.starts_with("第 2 章\u{3000}乙要")),
+            "chapter 2 was not its own chunk"
+        );
+        let chapter_1_chunk = chunks
+            .iter()
+            .find(|chunk| chunk.contains("见第 2 章再谈"))
+            .expect("chapter 1");
+        assert!(!chapter_1_chunk.starts_with("第 2 章"));
+        assert!(chapter_1_chunk.contains("见第 2 章再谈"));
+    }
+
+    #[test]
+    fn splits_an_oversized_chapter_without_dropping_text() {
+        let corpus = format!(
+            "第 1 章\u{3000}甲{}\n\n段\n\n第 2 章\u{3000}乙{}",
+            long_cjk('甲', 30_000),
+            long_cjk('乙', 3000)
+        );
+        let chunks = split_corpus_chunks(&corpus, 64 * 1024);
+        assert!(chunks.len() >= 3, "chunks={}", chunks.len());
+        assert_eq!(chunks.concat(), corpus);
+        assert!(chunks.last().unwrap().starts_with("第 2 章\u{3000}乙"));
+    }
 }

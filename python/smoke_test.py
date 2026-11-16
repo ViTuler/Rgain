@@ -1,5 +1,5 @@
 """Manual smoke test for stdio protocol. Run:
-E:\\Conda\\envs\\vi\\python.exe python/smoke_test.py
+E:\\Conda\\envs\\rgain\\python.exe python/smoke_test.py
 """
 
 from __future__ import annotations

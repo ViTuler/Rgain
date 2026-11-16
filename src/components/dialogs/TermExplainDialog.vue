@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import MarkdownBody from "../chrome/MarkdownBody.vue";
 import { use_i18n } from "../../i18n";
 
 defineProps<{
@@ -38,7 +39,7 @@ const { t } = use_i18n();
             <div class="body">
                 <p v-if="busy" class="muted">{{ t("term.busy") }}</p>
                 <p v-else-if="error" class="error">{{ error }}</p>
-                <p v-else-if="explanation">{{ explanation }}</p>
+                <MarkdownBody v-else-if="explanation" size="term" :source="explanation" />
                 <p v-else class="muted">{{ t("term.empty") }}</p>
             </div>
         </section>
@@ -54,19 +55,29 @@ const { t } = use_i18n();
     align-items: center;
     justify-content: center;
     padding: var(--space_lg);
+    overflow: hidden;
     background: rgb(var(--ink_rgb) / 0.55);
 }
 
 .sheet {
-    width: min(420px, 100%);
+    width: min(46rem, 100%);
+    max-height: 100%;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     gap: var(--space_sm);
     padding: var(--space_lg);
+    overflow: hidden;
     border-radius: var(--radius_lg);
     border: 1px solid var(--color_line);
     background: var(--color_surface_3);
     box-shadow: var(--shadow_panel);
+}
+
+header,
+.context,
+.hint {
+    flex-shrink: 0;
 }
 
 header {
@@ -88,6 +99,7 @@ h1 {
     margin: 0.2rem 0 0;
     font-size: 1.15rem;
     color: var(--color_ink);
+    overflow-wrap: anywhere;
 }
 
 .context {
@@ -103,14 +115,16 @@ h1 {
 }
 
 .body {
+    flex: 1 1 auto;
     min-height: 4.5rem;
     padding: var(--space_md);
+    overflow: auto;
+    overscroll-behavior: contain;
     border-radius: var(--radius_md);
     background: var(--color_surface_2);
     border: 1px solid var(--color_line);
     color: var(--color_body);
     line-height: 1.55;
-    white-space: pre-wrap;
 }
 
 .muted {

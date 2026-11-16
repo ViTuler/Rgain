@@ -24,6 +24,8 @@ export type IngestResult = {
   status: string;
   files_processed: number;
   files_cached: number;
+  /** LLM passes used in this ingest session (1 = single shot). */
+  chunks_processed?: number;
   graph: GraphPayload | null;
   error: string | null;
   warnings: string[];

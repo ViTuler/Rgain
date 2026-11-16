@@ -328,6 +328,7 @@ fn run_ingest_sync(
                 status: "failed".into(),
                 files_processed: 0,
                 files_cached: 0,
+                chunks_processed: 0,
                 graph: None,
                 error: Some(err),
                 warnings: vec![],
@@ -358,6 +359,7 @@ fn run_ingest_sync(
             status: "failed".into(),
             files_processed: files.len(),
             files_cached: cached,
+            chunks_processed: 0,
             graph: None,
             error: Some(detail),
             warnings,
@@ -365,8 +367,10 @@ fn run_ingest_sync(
     }
 
     // LLM stays off the DB lock so other commands stay responsive.
-    match llm::generate_graph(&settings, &corpus) {
-        Ok(graph) => {
+    // Oversized corpora are split by settings.chunk_size_mb and merged in-session.
+    match llm::generate_graph_session(&settings, &corpus, &project.kind) {
+        Ok((graph, chunks_processed, mut chunk_warnings)) => {
+            warnings.append(&mut chunk_warnings);
             let payload = serde_json::to_string(&graph).map_err(|e| e.to_string())?;
             let conn = db.conn.lock().map_err(|e| e.to_string())?;
             let title = graph
@@ -380,12 +384,17 @@ fn run_ingest_sync(
             db::save_graph_snapshot(&conn, run_id, &payload)?;
             db::set_run_title(&conn, run_id, &title)?;
             db::finish_run(&conn, run_id, "ok")?;
+            logutil::info(&format!(
+                "ingest_ok run_id={run_id} files={} chunks={chunks_processed}",
+                files.len()
+            ));
             Ok(IngestResult {
                 project_id: project.id,
                 run_id,
                 status: "ok".into(),
                 files_processed: files.len(),
                 files_cached: cached,
+                chunks_processed,
                 graph: Some(graph),
                 error: None,
                 warnings,
@@ -393,6 +402,7 @@ fn run_ingest_sync(
         }
         Err(err) => {
             warnings.push(err.clone());
+            logutil::error(&format!("ingest_llm_fail run_id={run_id} err={err}"));
             let conn = db.conn.lock().map_err(|e| e.to_string())?;
             let _ = db::set_run_title(&conn, run_id, &format!("Failed #{run_id}"));
             db::finish_run(&conn, run_id, "failed")?;
@@ -402,6 +412,7 @@ fn run_ingest_sync(
                 status: "failed".into(),
                 files_processed: files.len(),
                 files_cached: cached,
+                chunks_processed: 0,
                 graph: None,
                 error: Some(err),
                 warnings,

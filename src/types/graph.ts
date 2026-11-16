@@ -16,7 +16,21 @@ export type GraphAxis = "time" | "logic" | "story";
 
 export type GraphNodeKind = "trunk" | "branch";
 
-export type GraphEdgeRelation = "next" | "derives" | "contrasts" | string;
+export type GraphEdgeRelation =
+    | "next"
+    | "derives"
+    | "contrasts"
+    | "uses"
+    | "shares"
+    | string;
+
+/** Story beat fields. Used when meta.axis is "story" or "time". */
+export type GraphStory = {
+    time?: string;
+    place?: string;
+    actors?: string[];
+    impact?: string;
+};
 
 /** UI / layout projection mode. Independent of stored payload. */
 export type LogicViewMode = "2d" | "3d";
@@ -57,11 +71,19 @@ export type GraphNode = {
      */
     parent_id: string | null;
     /**
+     * Abstracted logic reused by several nodes (logger, loader, policy).
+     * Callers connect with edge relation "uses" or "shares".
+     */
+    shared?: boolean;
+    /** Present on narrative beats. */
+    story?: GraphStory;
+    /**
      * Visual compound parent for 2D nesting (Cytoscape `data.parent`).
      * When set, maps to a group node; must reference a `GraphGroup.id`
      * or another content node used as a box. Null = top-level.
      */
     group_id?: string | null;
+    /** Markdown (GFM + KaTeX). Rendered in the explain drawer. */
     explain: string;
     source_refs?: SourceRef[];
     /** Optional per-node accent; falls back to module color_hint. */
@@ -79,6 +101,18 @@ export type GraphGroup = {
     parent_id?: string | null;
     color?: string;
 };
+
+/** Click-to-highlight filter from the explain chips. */
+export type GraphTagFilter =
+    | { field: "kind"; value: GraphNodeKind }
+    | { field: "module"; value: string }
+    | { field: "order"; value: number };
+
+export function node_matches_tag(node: GraphNode, filter: GraphTagFilter): boolean {
+    if (filter.field === "kind") return node.kind === filter.value;
+    if (filter.field === "module") return node.module_id === filter.value;
+    return node.axis_order === filter.value;
+}
 
 export type GraphEdge = {
     from: string;
@@ -107,6 +141,8 @@ export type GraphPayload = {
     nodes: GraphNode[];
     edges: GraphEdge[];
     terms?: GraphTerm[];
+    /** Details seen but not yet placed. Empty after a successful merge. */
+    open_items?: string[];
 };
 
 /** Selection event shared by 2D and 3D stages. */

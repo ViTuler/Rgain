@@ -4,8 +4,10 @@ import type {
     Flow2dLayoutPreset,
     GraphNode,
     GraphPayload,
+    GraphTagFilter,
     LogicViewMode,
 } from "../../types/graph";
+import { node_matches_tag } from "../../types/graph";
 import { demo_graph } from "../../lib/layout_trunk";
 import { use_i18n } from "../../i18n";
 import GraphHudTitle from "./GraphHudTitle.vue";
@@ -15,6 +17,8 @@ import LogicScene from "./LogicScene.vue";
 const props = defineProps<{
     graph: GraphPayload | null;
     run_id?: number | null;
+    tag_filter?: GraphTagFilter | null;
+    focus_node_id?: string | null;
 }>();
 
 const { t } = use_i18n();
@@ -24,6 +28,13 @@ const emit = defineEmits<{
 }>();
 
 const source = computed(() => props.graph ?? demo_graph());
+const tag_match_ids = computed(() => {
+    const filter = props.tag_filter;
+    if (!filter) return null;
+    return source.value.nodes
+        .filter((node) => node_matches_tag(node, filter))
+        .map((node) => node.id);
+});
 const is_demo = computed(() => !props.graph);
 const has_run = computed(() => props.run_id != null);
 
@@ -47,11 +58,18 @@ const layout_options: { value: Flow2dLayoutPreset; label: string }[] = [
 watch(
     () => props.graph,
     (g) => {
-        selected_id.value = null;
+        selected_id.value = props.focus_node_id ?? null;
         if (g?.meta.default_view) view_mode.value = g.meta.default_view;
         if (g?.meta.default_flow_layout) {
             flow_layout.value = g.meta.default_flow_layout;
         }
+    },
+);
+
+watch(
+    () => props.focus_node_id,
+    (id) => {
+        selected_id.value = id ?? null;
     },
 );
 
@@ -121,8 +139,10 @@ async function on_reset_layout() {
 
         <div class="stage_body">
             <LogicFlow2d v-if="view_mode === '2d'" ref="flow2d_ref" :graph="graph" :run_id="run_id ?? null"
-                :layout_preset="flow_layout" :selected_id="selected_id" @select_node="on_select" />
-            <LogicScene v-else :graph="graph" @select_node="on_select" />
+                :layout_preset="flow_layout" :selected_id="selected_id" :tag_match_ids="tag_match_ids"
+                @select_node="on_select" />
+            <LogicScene v-else :graph="graph" :tag_match_ids="tag_match_ids" :selected_id="selected_id"
+                @select_node="on_select" />
 
             <div v-if="view_mode === '2d'" class="hud_2d">
                 <GraphHudTitle tone="light" :title="source.meta.title" :summary="source.meta.summary" />

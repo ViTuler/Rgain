@@ -7,7 +7,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-const DEV_PYTHON: &str = r"E:\Conda\envs\vi\python.exe";
+const DEV_PYTHON: &str = r"E:\Conda\envs\rgain\python.exe";
 
 pub struct SidecarState {
     pub child: Mutex<Option<SidecarProcess>>,
@@ -22,7 +22,7 @@ pub struct SidecarProcess {
 }
 
 enum SidecarLaunch {
-    /// Dev: conda `vi` python -m rgain_parser
+    /// Dev: conda `rgain` python -m rgain_parser
     DevModule { python: PathBuf, cwd: PathBuf },
     /// Prod: PyInstaller binary
     BundledExe { exe: PathBuf },
@@ -138,7 +138,7 @@ fn resolve_launch() -> Result<SidecarLaunch, String> {
             .unwrap_or_else(|_| PathBuf::from(DEV_PYTHON));
         if !python.exists() {
             return Err(format!(
-                "dev python missing: {} (set RGAIN_PYTHON or install conda env vi)",
+                "dev python missing: {} (set RGAIN_PYTHON or install conda env rgain)",
                 python.display()
             ));
         }

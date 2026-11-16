@@ -17,11 +17,14 @@ import {
     save_graph_layout,
 } from "../../lib/graph_layout_cache";
 import { demo_graph } from "../../lib/layout_trunk";
+import { use_settings } from "../../composables/use_settings";
 import { use_theme } from "../../composables/use_theme";
+import { DEFAULT_GRAPH_FONT_PX, clamp_font_px } from "../../types/settings";
 
 cytoscape.use(elk);
 
 const { theme } = use_theme();
+const { settings } = use_settings();
 
 const props = withDefaults(
     defineProps<{
@@ -29,11 +32,13 @@ const props = withDefaults(
         run_id?: number | null;
         layout_preset?: Flow2dLayoutPreset;
         selected_id?: string | null;
+        tag_match_ids?: string[] | null;
     }>(),
     {
         run_id: null,
         layout_preset: "flow-right",
         selected_id: null,
+        tag_match_ids: null,
     },
 );
 
@@ -66,6 +71,10 @@ function build_stylesheet() {
     const surface3 = get_css("--color_surface_3", "#fdfbfb");
     const muted = get_css("--color_muted", "#656565");
     const selected_bg = mix_hex(accent, surface, 0.14);
+    const label_px = clamp_font_px(settings.value.graph_font_px, DEFAULT_GRAPH_FONT_PX);
+    const compound_px = Math.max(10, Math.round((label_px * 11) / 12));
+    const edge_px = Math.max(9, Math.round((label_px * 10) / 12));
+    const label_width = Math.round((120 * label_px) / 12);
 
     return [
         {
@@ -76,12 +85,12 @@ function build_stylesheet() {
                 "border-color": line,
                 label: "data(label)",
                 color: ink,
-                "font-size": 12,
+                "font-size": label_px,
                 "font-weight": 500,
                 "text-valign": "center",
                 "text-halign": "center",
                 "text-wrap": "wrap",
-                "text-max-width": 120,
+                "text-max-width": label_width,
                 width: "label",
                 height: "label",
                 padding: "10px",
@@ -120,7 +129,7 @@ function build_stylesheet() {
                 "text-margin-y": -10,
                 "text-margin-x": 8,
                 color: muted,
-                "font-size": 11,
+                "font-size": compound_px,
                 "font-weight": 600,
                 padding: "18px",
                 shape: "round-rectangle",
@@ -144,7 +153,7 @@ function build_stylesheet() {
                 "line-color": muted,
                 "arrow-scale": 0.85,
                 label: "data(label)",
-                "font-size": 10,
+                "font-size": edge_px,
                 color: muted,
                 "text-background-color": surface,
                 "text-background-opacity": 0.9,
@@ -167,6 +176,18 @@ function build_stylesheet() {
             selector: "node.content.hover",
             style: {
                 "border-width": 2.2,
+            },
+        },
+        {
+            selector: "node.tag_dim",
+            style: {
+                opacity: 0.2,
+            },
+        },
+        {
+            selector: "edge.tag_dim",
+            style: {
+                opacity: 0.12,
             },
         },
     ] as cytoscape.StylesheetStyle[];
@@ -356,6 +377,7 @@ async function mount_cy() {
     });
 
     if (seq !== mount_seq) return;
+    sync_tag_filter();
     await apply_layout_or_elk();
 }
 
@@ -386,6 +408,25 @@ function clear_hover_highlight() {
         hover_clear_timer = null;
     }
     set_hover_highlight(null);
+}
+
+function sync_tag_filter() {
+    const graph = cy;
+    if (!graph) return;
+    const ids = props.tag_match_ids;
+    graph.batch(() => {
+        graph.elements().removeClass("tag_dim");
+        if (!ids) return;
+        const allow = new Set(ids);
+        graph.nodes(".content").forEach((node) => {
+            if (!allow.has(node.id())) node.addClass("tag_dim");
+        });
+        graph.edges().forEach((edge) => {
+            const from_ok = allow.has(edge.source().id());
+            const to_ok = allow.has(edge.target().id());
+            if (!from_ok || !to_ok) edge.addClass("tag_dim");
+        });
+    });
 }
 
 function sync_selection_style() {
@@ -458,9 +499,23 @@ watch(
     },
 );
 
+watch(
+    () => props.tag_match_ids,
+    () => {
+        sync_tag_filter();
+    },
+);
+
 watch(theme, () => {
     apply_theme_style();
 });
+
+watch(
+    () => settings.value.graph_font_px,
+    () => {
+        apply_theme_style();
+    },
+);
 </script>
 
 <template>

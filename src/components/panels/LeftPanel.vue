@@ -1,13 +1,18 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { use_i18n } from "../../i18n";
+import { build_logic_outline } from "../../lib/logic_outline";
 import IconButton from "../chrome/IconButton.vue";
+import LogicOutline from "./LogicOutline.vue";
 import ViewPane from "./ViewPane.vue";
+import type { GraphNode, GraphPayload } from "../../types/graph";
 import type { RunRow } from "../../types/project";
 
 const props = defineProps<{
     project_label: string;
     project_path: string;
+    graph: GraphPayload | null;
+    selected_node_id: string | null;
     runs: RunRow[];
     active_run_id: number | null;
     ingest_busy: boolean;
@@ -31,7 +36,15 @@ const emit = defineEmits<{
     open_run: [run_id: number];
     rename_run: [payload: { run_id: number; title: string }];
     delete_run: [run_id: number];
+    select_node: [node: GraphNode];
 }>();
+
+const outline = computed(() => (props.graph ? build_logic_outline(props.graph) : []));
+
+function on_outline_select(id: string) {
+    const node = props.graph?.nodes.find((item) => item.id === id);
+    if (node) emit("select_node", node);
+}
 
 const explorer_open = ref(true);
 const history_open = ref(true);
@@ -191,6 +204,13 @@ function on_open(run: RunRow) {
                         {{ ingest_busy ? t("explorer.parsing") : t("explorer.start_parse") }}
                     </button>
                 </div>
+                <LogicOutline
+                    v-if="outline.length"
+                    :nodes="outline"
+                    :selected_id="selected_node_id"
+                    :aria-label="t('explorer.outline')"
+                    @select="on_outline_select"
+                />
             </ViewPane>
 
             <ViewPane class="pane_history" :title="t('explorer.history')" :expanded="history_open" :badge="runs.length"

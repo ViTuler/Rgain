@@ -14,13 +14,14 @@ import GraphEdgeLine from "./GraphEdgeLine.vue";
 
 const props = defineProps<{
     graph: GraphPayload | null;
+    tag_match_ids?: string[] | null;
+    selected_id?: string | null;
 }>();
 
 const emit = defineEmits<{
     select_node: [node: LaidOutNode];
 }>();
 
-const selected_id = ref<string | null>(null);
 const hovered_id = ref<string | null>(null);
 /** Radians: wheel spins the graph around the main X axis (YZ branches rotate). */
 const axis_spin = ref(0);
@@ -31,7 +32,7 @@ const source_graph = computed(() => props.graph ?? demo_graph());
 const layout = computed(() => layout_trunk_graph(source_graph.value));
 
 const neighbor_ids = computed(() => {
-    const focus = hovered_id.value || selected_id.value;
+    const focus = hovered_id.value || props.selected_id;
     if (!focus) return new Set<string>();
     const set = new Set<string>([focus]);
     for (const e of layout.value.edges) {
@@ -42,7 +43,7 @@ const neighbor_ids = computed(() => {
 });
 
 const active_edge_keys = computed(() => {
-    const focus = hovered_id.value || selected_id.value;
+    const focus = hovered_id.value || props.selected_id;
     if (!focus) return new Set<string>();
     const set = new Set<string>();
     for (const e of layout.value.edges) {
@@ -53,7 +54,23 @@ const active_edge_keys = computed(() => {
     return set;
 });
 
-const has_focus = computed(() => Boolean(hovered_id.value || selected_id.value));
+const has_focus = computed(() => Boolean(hovered_id.value || props.selected_id));
+const tag_allow = computed(() => {
+    if (!props.tag_match_ids) return null;
+    return new Set(props.tag_match_ids);
+});
+
+function node_dimmed(node_id: string): boolean {
+    const allow = tag_allow.value;
+    if (allow) return !allow.has(node_id);
+    return has_focus.value && !neighbor_ids.value.has(node_id);
+}
+
+function edge_dimmed(from: string, to: string): boolean {
+    const allow = tag_allow.value;
+    if (allow) return !(allow.has(from) && allow.has(to));
+    return has_focus.value && !active_edge_keys.value.has(`${from}->${to}`);
+}
 
 const camera_position = computed(() => {
     const c = layout.value.bounds.center;
@@ -77,14 +94,12 @@ const controls_target = computed(() => {
 watch(
     () => props.graph,
     () => {
-        selected_id.value = null;
         hovered_id.value = null;
         axis_spin.value = 0;
     },
 );
 
 function on_select(id: string) {
-    selected_id.value = id;
     const node = layout.value.nodes.find((n) => n.id === id);
     if (node) emit("select_node", node);
 }
@@ -129,10 +144,10 @@ onBeforeUnmount(() => {
                             <GraphEdgeLine v-for="edge in layout.edges"
                                 :key="`${edge.from}->${edge.to}:${edge.relation}`" :edge="edge"
                                 :active="active_edge_keys.has(`${edge.from}->${edge.to}`)"
-                                :dimmed="has_focus && !active_edge_keys.has(`${edge.from}->${edge.to}`)" />
+                                :dimmed="edge_dimmed(edge.from, edge.to)" />
                             <GraphNodeMesh v-for="node in layout.nodes" :key="node.id" :node="node"
                                 :selected="selected_id === node.id" :hovered="hovered_id === node.id"
-                                :dimmed="has_focus && !neighbor_ids.has(node.id)" @select="on_select"
+                                :dimmed="node_dimmed(node.id)" @select="on_select"
                                 @hover="on_hover" />
                         </TresGroup>
                     </TresGroup>
