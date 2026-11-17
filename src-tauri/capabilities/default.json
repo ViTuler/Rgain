@@ -5,7 +5,12 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "opener:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://*" }]
+    },
+    "opener:deny-open-path",
+    "opener:deny-reveal-item-in-dir",
     "core:window:allow-close",
     "core:window:allow-minimize",
     "core:window:allow-maximize",

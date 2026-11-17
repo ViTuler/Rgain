@@ -881,7 +881,8 @@ pub fn save_settings(conn: &Connection, settings: &AppSettings) -> Result<(), St
 /// Apply frontend public settings; keep stored api_key unless a new one is provided.
 pub fn save_public_settings(conn: &Connection, incoming: &PublicSettings) -> Result<(), String> {
     let mut current = get_settings(conn)?;
-    current.api_base_url = incoming.api_base_url.clone();
+    // Validated in save_settings / llm callers; trim here for consistency.
+    current.api_base_url = incoming.api_base_url.trim().trim_end_matches('/').to_string();
     current.model = incoming.model.clone();
     current.agent_prompt = incoming.agent_prompt.clone();
     current.ui_locale = normalize_ui_locale(&incoming.ui_locale);

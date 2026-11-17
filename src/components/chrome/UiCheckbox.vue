@@ -11,11 +11,8 @@ const emit = defineEmits<{
 
 <template>
     <label class="el_check">
-        <input
-            type="checkbox"
-            :checked="model_value"
-            @change="emit('update:model_value', ($event.target as HTMLInputElement).checked)"
-        />
+        <input type="checkbox" :checked="model_value"
+            @change="emit('update:model_value', ($event.target as HTMLInputElement).checked)" />
         <span class="el_box" aria-hidden="true" />
         <span class="el_label">{{ label }}</span>
     </label>
@@ -63,17 +60,17 @@ const emit = defineEmits<{
     border-color: var(--color_accent_deep);
 }
 
-.el_check input:focus-visible + .el_box {
+.el_check input:focus-visible+.el_box {
     outline: 2px solid var(--color_accent_deep);
     outline-offset: 2px;
 }
 
-.el_check input:checked + .el_box {
+.el_check input:checked+.el_box {
     border-color: var(--color_accent_deep);
     background: var(--color_accent_deep);
 }
 
-.el_check input:checked + .el_box::after {
+.el_check input:checked+.el_box::after {
     content: "";
     width: 3px;
     height: 7px;

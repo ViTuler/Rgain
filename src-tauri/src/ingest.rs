@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 const TEXT_EXTS: &[&str] = &[
     "md", "txt", "py", "rs", "ts", "tsx", "js", "jsx", "vue", "cpp", "cc", "cxx", "c", "h",
@@ -111,6 +112,23 @@ fn path_is_ignored(rel: &str, name: &str, ignores: &[String]) -> bool {
     false
 }
 
+fn is_symlink(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+/// True when `path` resolves inside `root` (both canonicalized). Security (S3).
+fn path_within_root(root: &Path, path: &Path) -> bool {
+    let Ok(root_c) = root.canonicalize() else {
+        return false;
+    };
+    let Ok(path_c) = path.canonicalize() else {
+        return false;
+    };
+    path_c.starts_with(&root_c)
+}
+
 pub fn collect_candidate_files(root: &Path, ignore_paths: &[String]) -> Result<Vec<PathBuf>, String> {
     if root.is_file() {
         if !is_supported_book_file(root) {
@@ -147,12 +165,22 @@ fn walk(
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        if path.is_dir() {
+        // Do not follow symlinks — prevents walking outside the project root (S3).
+        if is_symlink(&path) {
+            continue;
+        }
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("file_type {}: {e}", path.display()))?;
+        if file_type.is_dir() {
             let rel = rel_path(root, &path);
             if path_is_ignored(&rel, &name, ignore_paths) {
                 continue;
             }
             walk(root, &path, ignore_paths, out)?;
+            continue;
+        }
+        if !file_type.is_file() {
             continue;
         }
         let ext = ext_of(&path);
@@ -168,6 +196,9 @@ fn walk(
             MAX_TEXT_FILE_BYTES
         };
         if meta.len() > max_bytes {
+            continue;
+        }
+        if !path_within_root(root, &path) {
             continue;
         }
         out.push(path);
@@ -255,8 +286,20 @@ fn extract_doc_via_sidecar(
     Ok((text, warnings))
 }
 
+fn with_db_conn<T>(
+    db_conn: &Mutex<Connection>,
+    f: impl FnOnce(&Connection) -> Result<T, String>,
+) -> Result<T, String> {
+    // Security best practice (S2): hold the SQLite mutex only for short DB ops,
+    // never across sidecar/disk extract which can take minutes.
+    let conn = db_conn.lock().map_err(|e| e.to_string())?;
+    f(&conn)
+}
+
+/// Extract project files. Cache lookup / upsert take short DB locks; sidecar and
+/// filesystem I/O run unlocked so other IPC stays responsive during long books.
 pub fn extract_project_files(
-    conn: &Connection,
+    db_conn: &Mutex<Connection>,
     sidecar: &SidecarState,
     project_id: i64,
     root: &Path,
@@ -285,7 +328,10 @@ pub fn extract_project_files(
             }
         };
 
-        if let Some((text, kind)) = db::get_cached_extract(conn, project_id, &rel, &hash)? {
+        let cached = with_db_conn(db_conn, |conn| {
+            db::get_cached_extract(conn, project_id, &rel, &hash)
+        })?;
+        if let Some((text, kind)) = cached {
             total_chars = total_chars.saturating_add(text.len());
             extracted.push(ExtractedFile {
                 path: rel,
@@ -308,7 +354,13 @@ pub fn extract_project_files(
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
+        // I/O outside the DB lock (sidecar extract may take minutes).
         let (kind, text, file_warnings) = if is_doc_ext(&ext) {
+            // Defense in depth: refuse docs that resolved outside the project root.
+            if root.is_dir() && !path_within_root(root, &path) {
+                warnings.push(format!("{rel}: path_outside_project_root"));
+                continue;
+            }
             match extract_doc_via_sidecar(sidecar, &path) {
                 Ok((text, w)) => (ext.clone(), text, w),
                 Err(err) => {
@@ -328,15 +380,17 @@ pub fn extract_project_files(
             continue;
         };
 
-        db::upsert_file_extract(
-            conn,
-            project_id,
-            &rel,
-            &hash,
-            &kind,
-            &text,
-            &file_warnings.join(";"),
-        )?;
+        with_db_conn(db_conn, |conn| {
+            db::upsert_file_extract(
+                conn,
+                project_id,
+                &rel,
+                &hash,
+                &kind,
+                &text,
+                &file_warnings.join(";"),
+            )
+        })?;
 
         total_chars = total_chars.saturating_add(text.len());
         extracted.push(ExtractedFile {

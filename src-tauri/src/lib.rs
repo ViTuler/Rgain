@@ -44,6 +44,7 @@ fn save_settings(
     mut settings: PublicSettings,
 ) -> Result<PublicSettings, String> {
     settings.dev_port = dev_port::clamp_dev_port(settings.dev_port);
+    settings.api_base_url = llm::validate_api_base_url(&settings.api_base_url)?;
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     db::save_public_settings(&conn, &settings)?;
     Ok(db::get_settings(&conn)?.to_public())
@@ -67,7 +68,7 @@ async fn test_llm(app: AppHandle, args: TestLlmArgs) -> Result<SidecarResult, St
 
         if let Some(url) = args.api_base_url {
             if !url.trim().is_empty() {
-                settings.api_base_url = url;
+                settings.api_base_url = llm::validate_api_base_url(&url)?;
             }
         }
         if let Some(model) = args.model {
@@ -312,10 +313,9 @@ fn run_ingest_sync(
         (settings, project, run_id, root)
     };
 
-    let extract = {
-        let conn = db.conn.lock().map_err(|e| e.to_string())?;
-        ingest::extract_project_files(&conn, sidecar, project.id, &root, &settings.ignore_paths)
-    };
+    // S2: do not hold the DB mutex across sidecar/disk extract.
+    let extract =
+        ingest::extract_project_files(&db.conn, sidecar, project.id, &root, &settings.ignore_paths);
 
     let (files, mut warnings) = match extract {
         Ok(v) => v,

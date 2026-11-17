@@ -19,7 +19,8 @@ function on_click(event: MouseEvent) {
     const anchor = target.closest("a");
     if (!anchor) return;
     const href = anchor.getAttribute("href")?.trim() ?? "";
-    if (!/^https?:\/\//i.test(href)) return;
+    // Security (S5): only open https in the system browser; block http phishing.
+    if (!/^https:\/\//i.test(href)) return;
     event.preventDefault();
     void openUrl(href);
 }

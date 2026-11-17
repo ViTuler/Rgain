@@ -27,6 +27,26 @@ fn http_client(timeout_secs: u64) -> Result<reqwest::blocking::Client, String> {
         .map_err(|e| format!("http_client:{}", error_chain(&e)))
 }
 
+/// Allow https anywhere, or http only to loopback (local OpenAI-compatible servers).
+/// Security best practice (S4): block arbitrary http SSRF / key exfiltration endpoints.
+pub fn validate_api_base_url(raw: &str) -> Result<String, String> {
+    let url = raw.trim().trim_end_matches('/').to_string();
+    if url.is_empty() {
+        return Err("api_base_url_empty".into());
+    }
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("https://") {
+        return Ok(url);
+    }
+    let loopback = lower.starts_with("http://127.0.0.1")
+        || lower.starts_with("http://localhost")
+        || lower.starts_with("http://[::1]");
+    if loopback {
+        return Ok(url);
+    }
+    Err("api_base_url_must_be_https_or_localhost_http".into())
+}
+
 fn apply_think(body: &mut Value, enabled: bool) {
     let Some(obj) = body.as_object_mut() else {
         return;
@@ -60,7 +80,7 @@ fn post_chat(
     body: &Value,
     timeout_secs: u64,
 ) -> Result<(reqwest::StatusCode, String), String> {
-    let base = settings.api_base_url.trim_end_matches('/');
+    let base = validate_api_base_url(&settings.api_base_url)?;
     let url = format!("{base}/chat/completions");
     let client = http_client(timeout_secs)?;
     let response = client
